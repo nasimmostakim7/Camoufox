@@ -176,3 +176,56 @@ Invariants worth not breaking:
 Tests: `pythonlib/tests/test_audit.py` — runs against a real `ThreadingHTTPServer`
 that behaves like a small WAF, so HTTP, classification, scheduling, ceilings and
 reporting are all exercised for real. No mocks and no real internet.
+
+## Fork feature: WAF Audit Console
+
+`apps/audit-console/` is the hosted front end for the engine above. It is a
+separate, self-contained app — it does not import `camoufox`, it vendors the
+engine — that lives in the same repo so it cannot drift from the ladder it
+reports on.
+
+| Path | Role |
+|------|------|
+| `app.py` | entry point; `--self-test` is what CI uses to check the bundle |
+| `sync_engine.py` | regenerates `console/_engine/` from `pythonlib/camoufox/audit/` |
+| `build.py` | builds the single-file `.pyz` release artifact |
+| `console/server.py` | stdlib `http.server`; `/api/audits`, `/api/health`, `/api/levels` |
+| `console/runs.py` | `AuditService` — allow-list gate, ceilings, run manager |
+| `console/demo_waf.py` | the bundled Cloudflare-ish demo the console audits by default |
+| `console/ui/` | the page and its script |
+
+`ci/run_console.py` is the CI gate; `make console` runs it, `make console-check`
+runs just the tests, `make console-build` produces the artifact.
+
+Invariants worth not breaking:
+
+- **The allow-list is the only thing standing between this and an open request
+  forwarder.** It is checked before any request leaves and it *raises* rather than
+  returning a flag, so there is no path to a socket that skips it. A third party,
+  an internal address, or the cloud metadata endpoint is refused with a 403 and no
+  packet sent. Both the GUI and the CLI gate on it; do not add a path that does not.
+- **The demo is the default target, and `--target` needs `--i-am-authorized`.**
+  Nothing else adds a host. Do not make the allow-list configurable at runtime —
+  that is the same as removing it.
+- **The vendored engine is generated, never edited.** `sync_engine.py` rewrites the
+  engine's lazy `..async_api` / `..proxy` imports to absolute `camoufox.*`, because
+  after relocation `..` no longer means `camoufox`. Those imports only fire inside
+  the browser rungs, so L0 stays dependency-free — which is the property the
+  single-file build is bought for. CI fails on drift.
+- **The artifact must carry no third-party packages.** CI asserts this and runs
+  `--self-test` against it. A web framework added "for convenience" would end the
+  one-file promise that makes the console hostable.
+- **When no browser is installed the ladder caps at L0, with a notice.** The
+  hosted console runs on a bare Python, so this is the normal state. Do not accept
+  a deeper `max_level` and then report a launch failure for every rung — that
+  attributes a finding to a posture that was never tested.
+- **UI assets are read through `read_ui_asset()`, which accepts only a bare
+  filename.** That is what keeps traversal out in both the directory and the
+  zipapp form; a plain `Path` read inside the archive silently fails.
+- **The console's ceilings are not caller-settable.** `CONSOLE_LIMITS` and the
+  visitor/level caps apply regardless of the request, because the console is
+  shared.
+
+Tests: `apps/audit-console/tests/test_console.py` — drives the real HTTP surface
+against the real demo WAF. No mocks: most of the tests exist to prove the refusals
+happen *before* a request leaves. Browser-free, so it stays in tier 1.
