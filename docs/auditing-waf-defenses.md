@@ -244,12 +244,22 @@ hardware, so a defense that inspects those may behave differently than on a lapt
 Treat an L2+ result from a headless server as strong evidence, not as identical to a
 run on a real desktop.
 
+**Headed levels fail with `CannotFindXvfb`** — the fallback above needs `Xvfb` to be
+present. `apt install xvfb` (or run the whole audit under `xvfb-run -a`) and the rung
+will launch.
+
 **Fingerprint levels (L3 and above) run without geolocation** — the `geoip` extra is
 not installed, so `geoip2` is missing and those rungs would otherwise fail to launch.
 The runner clears the flag on its own so the rung still runs and reports a verdict,
 and logs a notice. The mask is weaker: the spoofed fingerprint is not aligned to the
 request's IP location or timezone, which a defense comparing the two can detect.
 Install it with `pip install camoufox[geoip]` for the full mask.
+
+Both fallbacks are decisions the runner makes per rung, and both are asserted in
+`pythonlib/tests/test_audit.py` against the assembled launch options rather than
+against a live visit. That suite runs in CI's browser-free `pythonlib` tier, which
+fetches no browser, so a version of these tests that launched one would report
+`CamoufoxNotInstalled` as if it were an audit finding.
 
 **Every level reports the same verdict** — check that the target is actually being
 reached. A `403` at L0 and a `403` at L6 with an identical body often means the

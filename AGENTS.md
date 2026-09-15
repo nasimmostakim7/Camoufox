@@ -163,6 +163,12 @@ Invariants worth not breaking:
   `_has_geoip()` gates the `geoip` flag and clears it with a notice when absent.
   Leaving the flag set makes every L3+ rung fail to launch on a plain install and
   report an error for a posture it never actually tested.
+- **The two fallbacks belong to `_launch_options()`, and its tests must not
+  launch.** Both are decisions about what a rung launches with, so they live in
+  one method that returns the option dict. CI's `pythonlib` tier never fetches a
+  browser, so a test that drives a real headed visit errors with
+  `CamoufoxNotInstalled` and reads as a failure of the fallback it was meant to
+  prove. Assert on the options, not on a live visit.
 - **Secrets stay out of reports and logs.** Proxy passwords are redacted
   (`ProxySession.describe()` / `Endpoint.redacted()`), and `extra_headers` is not
   echoed into the report.

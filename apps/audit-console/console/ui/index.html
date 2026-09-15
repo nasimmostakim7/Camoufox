@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WAF Audit Console</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --line: #2a2f3a;
+    --text: #e6e9ef;
+    --muted: #8b93a3;
+    --accent: #5b9dff;
+    --allow: #3fb950;
+    --challenge: #d29922;
+    --block: #f85149;
+    --error: #a371f7;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 22px 28px 18px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  h1 { font-size: 19px; margin: 0; letter-spacing: -0.01em; }
+  header .sub { color: var(--muted); font-size: 13px; }
+  main { padding: 24px 28px 60px; max-width: 1180px; }
+  .grid { display: grid; grid-template-columns: 340px 1fr; gap: 22px; align-items: start; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 18px;
+  }
+  .panel h2 {
+    margin: 0 0 14px;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 5px; }
+  input, select {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    color: var(--text);
+    border-radius: 7px;
+    padding: 9px 11px;
+    font: inherit;
+    font-size: 14px;
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  .row { display: flex; gap: 10px; }
+  .row > div { flex: 1; }
+  button {
+    width: 100%;
+    margin-top: 18px;
+    padding: 11px 14px;
+    border-radius: 7px;
+    border: 1px solid transparent;
+    background: var(--accent);
+    color: #08111f;
+    font: inherit;
+    font-weight: 650;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { filter: brightness(1.08); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.ghost { background: transparent; color: var(--text); border-color: var(--line); }
+  .hint { color: var(--muted); font-size: 12.5px; margin-top: 12px; }
+  .mono { font-family: var(--mono); font-size: 12.5px; }
+
+  .verdicts { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; }
+  .tally { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .dot.allowed { background: var(--allow); }
+  .dot.challenged { background: var(--challenge); }
+  .dot.rate_limited { background: var(--challenge); }
+  .dot.blocked { background: var(--block); }
+  .dot.error { background: var(--error); }
+
+  .rung { border-top: 1px solid var(--line); padding: 13px 0; }
+  .rung:first-of-type { border-top: none; }
+  .rung-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+  .rung-name { font-weight: 600; font-size: 14px; }
+  .rung-meta { color: var(--muted); font-size: 12.5px; }
+  .rung-desc { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+  .bar { height: 7px; border-radius: 4px; background: var(--panel-2); display: flex; overflow: hidden; margin-top: 9px; }
+  .bar span { display: block; height: 100%; }
+  .isolates {
+    margin-top: 8px; font-size: 12.5px; color: var(--muted);
+    border-left: 2px solid var(--line); padding-left: 10px;
+  }
+  .badge {
+    font-size: 11px; padding: 2px 7px; border-radius: 20px;
+    border: 1px solid var(--line); color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  #findings { margin: 0; padding: 0; list-style: none; }
+  #findings li {
+    padding: 9px 12px;
+    background: var(--panel-2);
+    border-radius: 7px;
+    margin-bottom: 8px;
+    font-size: 13.5px;
+    border-left: 3px solid var(--accent);
+  }
+  #log {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: #0b0d11;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px;
+    height: 210px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+  }
+  .empty { color: var(--muted); font-size: 13.5px; }
+  .statusline { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .pill {
+    font-size: 11.5px; padding: 3px 10px; border-radius: 20px;
+    background: var(--panel-2); border: 1px solid var(--line);
+    text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted);
+  }
+  .pill.running { color: var(--accent); border-color: var(--accent); }
+  .pill.done { color: var(--allow); border-color: var(--allow); }
+  .pill.failed { color: var(--block); border-color: var(--block); }
+  .exports { display: flex; gap: 8px; margin-top: 12px; }
+  .exports a {
+    flex: 1; text-align: center; padding: 8px; border-radius: 7px;
+    border: 1px solid var(--line); color: var(--text); text-decoration: none;
+    font-size: 13px;
+  }
+  .exports a:hover { border-color: var(--accent); color: var(--accent); }
+  .err { color: var(--block); font-size: 13px; margin-top: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WAF Audit Console</h1>
+  <span class="sub">Which of your defenses actually hold as the client looks less like a bot?</span>
+</header>
+<main>
+  <div class="grid">
+    <section class="panel">
+      <h2>Audit</h2>
+      <label for="target">Target URL</label>
+      <input id="target" value="" placeholder="http://127.0.0.1:PORT/" readonly>
+      <div class="hint">A hosted console audits only its own bundled demo WAF. The host is fixed and checked before any request leaves.</div>
+
+      <div class="row">
+        <div>
+          <label for="visitors">Visitors</label>
+          <input id="visitors" type="number" value="18" min="1" max="400">
+        </div>
+        <div>
+          <label for="hours">Window (h)</label>
+          <input id="hours" type="number" value="0.02" min="0.001" step="0.005">
+        </div>
+      </div>
+
+      <label for="maxlevel">Highest rung to climb</label>
+      <select id="maxlevel"></select>
+
+      <div class="row">
+        <div>
+          <label for="seed">Seed</label>
+          <input id="seed" type="number" value="7">
+        </div>
+      </div>
+
+      <button id="start">Start audit</button>
+      <button id="cancel" class="ghost" disabled>Stop</button>
+      <div class="err" id="err" hidden></div>
+    </section>
+
+    <section>
+      <div class="panel">
+        <div class="statusline">
+          <h2 style="margin:0">Result</h2>
+          <span class="pill" id="status">idle</span>
+          <span class="rung-meta" id="stats"></span>
+        </div>
+        <ul id="findings"><li class="empty">No audit has run yet.</li></ul>
+        <div id="rungs"></div>
+        <div class="exports" id="exports" hidden>
+          <a data-fmt="html" target="_blank">HTML report</a>
+          <a data-fmt="text" target="_blank">Text</a>
+          <a data-fmt="json" target="_blank">JSON</a>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:22px">
+        <h2>Live progress</h2>
+        <pre id="log"></pre>
+      </div>
+    </section>
+  </div>
+</main>
+<script src="console.js"></script>
+</body>
+</html>

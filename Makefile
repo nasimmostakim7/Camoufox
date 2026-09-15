@@ -12,7 +12,7 @@ pacman := python python-pip p7zip go msitools wget aria2 sqlite
         build-launcher check-arch revert edits run bootstrap mozbootstrap dir \
         package-linux package-macos package-windows vcredist_arch patch unpatch \
         workspace check-arg edit-cfg ff-dbg tests update-ubo-assets generate-assets-car \
-        setup-macos-sdk
+        setup-macos-sdk console console-check console-build
 
 help:
 	@echo "Available targets:"
@@ -250,6 +250,20 @@ tests:
 	python3 -m ci.run_playwright \
 		--binary ./$(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox-bin \
 		$(if $(filter true,$(headful)),--headful,)
+
+# The WAF Audit Console: a self-contained front end over the audit engine.
+# Browser-free -- it audits a demo WAF over plain HTTP -- so it runs anywhere.
+console:
+	python3 -m ci.run_console
+
+# Fast check that the vendored engine copy has not drifted from pythonlib.
+console-check:
+	python3 apps/audit-console/sync_engine.py --check
+	python3 -m pytest apps/audit-console/tests -q
+
+# The release artifact: one runnable file, no dependencies.
+console-build:
+	python3 apps/audit-console/build.py --out dist/waf-audit-console.pyz
 
 # Lets tests/patches/*.py run against an unpackaged build. Not needed by `run`
 # or `tests`, which launch without the Python wrapper and so fall back to the

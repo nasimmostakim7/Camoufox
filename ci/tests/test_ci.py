@@ -955,7 +955,7 @@ def test_required_suites_are_names_a_runner_actually_writes():
         required.update(part for part in line.split() if not part.startswith("$"))
 
     producible = {
-        "build", "build_tester", "patch_guards", "pythonlib", "sundial",
+        "build", "build_tester", "console", "patch_guards", "pythonlib", "sundial",
         "native", "native_rules", "native_browser", "native_growth",
         "playwright", "skiplist_audit",
     }
@@ -1823,7 +1823,7 @@ def test_the_browser_suites_are_required_either_way():
     for changed in ("true", "false"):
         required = _required_suites(changed, "false")
         assert {
-            "pythonlib", "native_rules", "patch_guards", "skiplist_audit",
+            "pythonlib", "console", "native_rules", "patch_guards", "skiplist_audit",
             "build_tester", "playwright", "native_browser",
         } <= required, changed
 

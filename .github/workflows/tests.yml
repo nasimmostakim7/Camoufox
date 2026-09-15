@@ -28,7 +28,7 @@ name: Tests
 # fails a two-second lint never reaches a seventy-minute build.
 #
 #   0  static      lint, self-tests, settled decisions        seconds
-#   1  unit        pythonlib                                  ~1 min
+#   1  unit        pythonlib, console                        ~2 min
 #   2  browser     BUILD if patches/additions changed,
 #                  otherwise FETCH the released binary        ~70 min / ~1 min
 #   3a smoke       patch guards, skiplist audit, build-tester ~15 min
@@ -294,6 +294,42 @@ jobs:
           path: .ci-work/results/
           include-hidden-files: true
           if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  console:
+    name: console
+    # Tier 1. The WAF Audit Console is browser-free -- it audits a bundled demo
+    # WAF over plain HTTP -- so it belongs beside pythonlib, not in the browser
+    # tier. Also builds and self-tests the single-file artifact, so a console
+    # that cannot pass its own tests is never published as a release asset.
+    needs: [resolve, static]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install -r ci/requirements.txt pytest
+      - name: Run
+        run: python3 -m ci.run_console
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-console
+          path: .ci-work/results/
+          include-hidden-files: true
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: waf-audit-console
+          path: .ci-work/waf-audit-console.pyz
+          include-hidden-files: true
+          if-no-files-found: error
 
   # ---------------------------------------------------------------------------
   build:
@@ -880,7 +916,7 @@ jobs:
   # ---------------------------------------------------------------------------
   summary:
     name: Summary
-    needs: [resolve, static, pythonlib, build, fetch-browser, playwright,
+    needs: [resolve, static, pythonlib, console, build, fetch-browser, playwright,
             patch-guards, build-tester, native, sundial]
     if: always() && needs.resolve.result == 'success'
     runs-on: ubuntu-24.04
@@ -921,7 +957,7 @@ jobs:
           # summarize report "produced no result file" and fail the gate on
           # every pull request that did not touch the browser. Which is most of
           # them, and exactly the cheap path this pipeline advertises.
-          required="pythonlib native_rules patch_guards skiplist_audit build_tester playwright native_browser"
+          required="pythonlib console native_rules patch_guards skiplist_audit build_tester playwright native_browser"
           if [ "${{ needs.resolve.outputs.browser_changed }}" = "true" ]; then
             required="$required build"
           fi
@@ -986,7 +1022,7 @@ jobs:
     # that is not `success`, including `skipped`, fails the gate: a suite that
     # did not run has not passed, and silently skipping one is the cheapest way
     # to a green tick.
-    needs: [resolve, static, pythonlib, build, fetch-browser, playwright,
+    needs: [resolve, static, pythonlib, console, build, fetch-browser, playwright,
             patch-guards, build-tester, native, sundial, summary]
     if: always()
     runs-on: ubuntu-24.04

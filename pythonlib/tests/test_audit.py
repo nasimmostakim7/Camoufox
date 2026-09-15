@@ -426,25 +426,37 @@ def test_headed_level_falls_back_to_virtual_display(waf_server, monkeypatch):
     """
     On a host with no X server, a headed rung must use Camoufox's virtual display
     rather than failing to launch, and must say so in a progress notice.
+
+    Asserted on the assembled launch options, not on a live visit: the pythonlib
+    tier is browser-free by design (CI does not fetch a browser for it), so a
+    test that needs a real launch would report CamoufoxNotInstalled as an audit
+    error -- a false failure of the tier's own contract.
     """
     monkeypatch.delenv("DISPLAY", raising=False)
     events = []
-    report = asyncio.run(
-        AuditRunner(
-            _config(waf_server, levels=[2], visitor_count=2),
-            on_progress=events.append,
-        ).run()
+    runner = AuditRunner(
+        _config(waf_server, levels=[2], visitor_count=2),
+        on_progress=events.append,
     )
 
-    level = report.levels[0]
-    assert level.completed == 2
-    assert level.detected == 0, f"headed rung errored instead of running: {level.visits[0].reason[:200]}"
-    assert all(v.verdict == Verdict.ALLOWED for v in level.visits)
+    options = runner._launch_options(level_by_id(2))
 
+    assert options["headless"] == "virtual", (
+        "a headed rung with no display must fall back to the virtual display"
+    )
     notices = [e for e in events if e.get("event") == "notice"]
     assert any("virtual display" in n.get("message", "") for n in notices), (
         "the fallback must be announced, not silent"
     )
+
+
+def test_an_explicit_display_is_left_alone(waf_server, monkeypatch):
+    """A host that has an X server must launch headed, not virtual."""
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setattr(AuditRunner, "_has_display", staticmethod(lambda: True))
+    runner = AuditRunner(_config(waf_server, levels=[2], visitor_count=1))
+
+    assert runner._launch_options(level_by_id(2))["headless"] is False
 
 
 def test_geoip_absent_falls_back_instead_of_failing_to_launch(waf_server, monkeypatch):
@@ -455,24 +467,35 @@ def test_geoip_absent_falls_back_instead_of_failing_to_launch(waf_server, monkey
     would fail to launch, and the audit would report errors for levels it never
     actually exercised. The masking is weaker without geolocation, but a rung that
     runs and is measured beats one that errors out.
+
+    As above, this asserts the launch contract rather than a live visit, so it
+    holds on the browser-free tier.
     """
     monkeypatch.setattr(AuditRunner, "_has_geoip", staticmethod(lambda: False))
     events = []
-    report = asyncio.run(
-        AuditRunner(
-            _config(waf_server, levels=[3], visitor_count=1),
-            on_progress=events.append,
-        ).run()
+    runner = AuditRunner(
+        _config(waf_server, levels=[3], visitor_count=1),
+        on_progress=events.append,
     )
 
-    level = report.levels[0]
-    assert level.detected == 0, f"rung errored instead of running: {level.visits[0].reason[:200]}"
-    assert all(v.verdict == Verdict.ALLOWED for v in level.visits)
+    options = runner._launch_options(level_by_id(3))
 
+    assert options["geoip"] is False, (
+        "the geoip flag must be cleared when the extra is missing, or the rung "
+        "fails to launch instead of being measured"
+    )
     notices = [e for e in events if e.get("event") == "notice"]
     assert any("geoip" in n.get("message", "").lower() for n in notices), (
         "a weaker mask must be announced, not silent"
     )
+
+
+def test_geoip_is_kept_when_the_extra_is_installed(waf_server, monkeypatch):
+    """The flag survives when geoip2 is importable: the fallback is conditional."""
+    monkeypatch.setattr(AuditRunner, "_has_geoip", staticmethod(lambda: True))
+    runner = AuditRunner(_config(waf_server, levels=[3], visitor_count=1))
+
+    assert runner._launch_options(level_by_id(3))["geoip"] is True
 
 
 # --------------------------------------------------------------------------
