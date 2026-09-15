@@ -155,6 +155,14 @@ Invariants worth not breaking:
   consecutive-error rule stop the run and record why.
 - **Scheduling must stay non-uniform.** Randomised, jittered inter-arrival times
   are the point; do not replace the sampled distribution with a fixed interval.
+- **A headed rung must not fail for want of a display.** `_has_display()` decides,
+  and a host without an X server gets Camoufox's `headless="virtual"` mode, with a
+  notice. Do not "simplify" this to plain `headless: True` — that silently stops
+  testing the headed posture, which is what L2 exists to measure.
+- **A rung must not fail for want of an optional extra.** `geoip2` is optional, so
+  `_has_geoip()` gates the `geoip` flag and clears it with a notice when absent.
+  Leaving the flag set makes every L3+ rung fail to launch on a plain install and
+  report an error for a posture it never actually tested.
 - **Secrets stay out of reports and logs.** Proxy passwords are redacted
   (`ProxySession.describe()` / `Endpoint.redacted()`), and `extra_headers` is not
   echoed into the report.

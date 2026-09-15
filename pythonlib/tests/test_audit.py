@@ -408,6 +408,73 @@ def test_runner_refuses_out_of_scope_target(waf_server):
     assert report.total_requests == 0
 
 
+def test_display_detection_matches_the_environment(monkeypatch):
+    """
+    A headed rung needs an X server; detecting one must not be optimistic.
+
+    Reporting a display that is not there sends a headed launch straight into
+    "no DISPLAY environment variable specified" and turns a verdict into an error.
+    """
+    monkeypatch.delenv("DISPLAY", raising=False)
+    assert AuditRunner._has_display() is False
+
+    monkeypatch.setenv("DISPLAY", ":98765")
+    assert AuditRunner._has_display() is False, "a socket that does not exist is not a display"
+
+
+def test_headed_level_falls_back_to_virtual_display(waf_server, monkeypatch):
+    """
+    On a host with no X server, a headed rung must use Camoufox's virtual display
+    rather than failing to launch, and must say so in a progress notice.
+    """
+    monkeypatch.delenv("DISPLAY", raising=False)
+    events = []
+    report = asyncio.run(
+        AuditRunner(
+            _config(waf_server, levels=[2], visitor_count=2),
+            on_progress=events.append,
+        ).run()
+    )
+
+    level = report.levels[0]
+    assert level.completed == 2
+    assert level.detected == 0, f"headed rung errored instead of running: {level.visits[0].reason[:200]}"
+    assert all(v.verdict == Verdict.ALLOWED for v in level.visits)
+
+    notices = [e for e in events if e.get("event") == "notice"]
+    assert any("virtual display" in n.get("message", "") for n in notices), (
+        "the fallback must be announced, not silent"
+    )
+
+
+def test_geoip_absent_falls_back_instead_of_failing_to_launch(waf_server, monkeypatch):
+    """
+    Rungs that ask for geoip must still run when the optional extra is missing.
+
+    geoip2 is an optional dependency, so on a plain install every rung from L3 up
+    would fail to launch, and the audit would report errors for levels it never
+    actually exercised. The masking is weaker without geolocation, but a rung that
+    runs and is measured beats one that errors out.
+    """
+    monkeypatch.setattr(AuditRunner, "_has_geoip", staticmethod(lambda: False))
+    events = []
+    report = asyncio.run(
+        AuditRunner(
+            _config(waf_server, levels=[3], visitor_count=1),
+            on_progress=events.append,
+        ).run()
+    )
+
+    level = report.levels[0]
+    assert level.detected == 0, f"rung errored instead of running: {level.visits[0].reason[:200]}"
+    assert all(v.verdict == Verdict.ALLOWED for v in level.visits)
+
+    notices = [e for e in events if e.get("event") == "notice"]
+    assert any("geoip" in n.get("message", "").lower() for n in notices), (
+        "a weaker mask must be announced, not silent"
+    )
+
+
 # --------------------------------------------------------------------------
 # Reporting
 # --------------------------------------------------------------------------

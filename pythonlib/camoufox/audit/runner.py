@@ -19,7 +19,9 @@ Design notes that matter for correctness:
 from __future__ import annotations
 
 import asyncio
+import os
 import random
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -97,6 +99,8 @@ class AuditRunner:
         self._limiter = _Limiter(config.limits.max_rps, config.limits.max_requests)
         self._proxy_counts: Dict[str, int] = {}
         self._consecutive_errors = 0
+        self._virtual_display_used = False
+        self._geoip_missing_noted = False
         self._rotator = None
         if config.proxy:
             from ..proxy import build_rotator
@@ -107,6 +111,52 @@ class AuditRunner:
 
     def _cancelled(self) -> bool:
         return bool(self._cancel is not None and self._cancel.is_set())
+
+    @staticmethod
+    def _has_display() -> bool:
+        """True when this host already has a usable X server."""
+        if sys.platform.startswith("win") or sys.platform == "darwin":
+            return True
+        display = os.environ.get("DISPLAY", "")
+        if not display:
+            return False
+        # "localhost:0" and similar still need the socket to exist.
+        if display.startswith(":"):
+            number = display[1:].split(".")[0]
+            return os.path.exists(f"/tmp/.X11-unix/X{number}")
+        return True
+
+    def _note_virtual_display(self) -> None:
+        if self._virtual_display_used:
+            return
+        self._virtual_display_used = True
+        self._progress(
+            event="notice",
+            message=(
+                "No X server detected; headed levels will use Camoufox's virtual "
+                "display. Results are valid, but a real desktop may still differ."
+            ),
+        )
+
+    @staticmethod
+    def _has_geoip() -> bool:
+        """True when the optional geoip extra is installed."""
+        import importlib.util
+
+        return importlib.util.find_spec("geoip2") is not None
+
+    def _note_geoip_missing(self) -> None:
+        if self._geoip_missing_noted:
+            return
+        self._geoip_missing_noted = True
+        self._progress(
+            event="notice",
+            message=(
+                "The geoip extra is not installed, so fingerprint spoofing runs "
+                "without IP-based geolocation and timezone alignment. Install it "
+                "with 'pip install camoufox[geoip]' for a stronger mask."
+            ),
+        )
 
     def _progress(self, **payload) -> None:
         if self._on_progress:
@@ -543,6 +593,21 @@ class AuditRunner:
 
         options = dict(level.camoufox_options or {})
         options.setdefault("headless", self.config.headless)
+        if not options["headless"]:
+            # A headed rung needs an X server. On a headless host (a CI runner, a
+            # VPS) the launch would fail outright with "no DISPLAY environment
+            # variable specified", which measures nothing and reports an error
+            # where the operator expects a verdict. 'virtual' tells Camoufox to
+            # start its own Xvfb, so the rung still exercises a real headed
+            # browser. An explicit DISPLAY is left alone.
+            if not self._has_display():
+                options["headless"] = "virtual"
+                self._note_virtual_display()
+        if options.get("geoip") and not self._has_geoip():
+            # geoip2 is an optional extra; leaving the flag set would make every
+            # rung that uses it fail to launch, measuring nothing at all.
+            options["geoip"] = False
+            self._note_geoip_missing()
         if level.id >= 4 and proxy_session is not None:
             # The proxy is applied per context below, so the browser itself
             # launches direct; this keeps one browser serving many exits.

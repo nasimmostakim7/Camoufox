@@ -231,6 +231,26 @@ you have permission and pass the flag.
 **Browser levels report `CamoufoxNotInstalled`** — the browser binary has not been
 fetched yet. Run `camoufox fetch`, or use the Browsers tab in the GUI.
 
+**Headed levels (L2 and above) report an error about `no DISPLAY`** — this should not
+happen on its own. The runner detects a host with no X server and points those rungs
+at Camoufox's built-in virtual display, announcing it with a notice in the log. If you
+see a raw `no DISPLAY environment variable specified` in a visit reason instead, the
+virtual display could not start: check that `Xvfb` is installed (`apt install xvfb`),
+or run under `xvfb-run`.
+
+Note that a virtual display is not a desktop. Headed levels under it still look like
+a real headed browser to JavaScript, but there is no window manager and no real screen
+hardware, so a defense that inspects those may behave differently than on a laptop.
+Treat an L2+ result from a headless server as strong evidence, not as identical to a
+run on a real desktop.
+
+**Fingerprint levels (L3 and above) run without geolocation** — the `geoip` extra is
+not installed, so `geoip2` is missing and those rungs would otherwise fail to launch.
+The runner clears the flag on its own so the rung still runs and reports a verdict,
+and logs a notice. The mask is weaker: the spoofed fingerprint is not aligned to the
+request's IP location or timezone, which a defense comparing the two can detect.
+Install it with `pip install camoufox[geoip]` for the full mask.
+
 **Every level reports the same verdict** — check that the target is actually being
 reached. A `403` at L0 and a `403` at L6 with an identical body often means the
 scope is wrong or the host is refusing all traffic.
