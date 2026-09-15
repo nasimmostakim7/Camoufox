@@ -113,3 +113,52 @@ browser object stands in). Keep it that way; a suite that dials real proxies is
 slow and flaky.
 
 CLI: `camoufox proxy check|status|reset`.
+
+## Fork feature: WAF / bot-defense audit
+
+This fork adds an audit tool (`pythonlib/camoufox/audit/`) for testing your own
+site's defenses. It is an **attribution** tool, not a bypass bot: it runs an
+ordered ladder of client postures and reports which defense stopped which rung.
+
+Layout:
+
+| Module | Role |
+|--------|------|
+| `scope.py` | `TargetScope` — the authorization gate. Every navigation goes through `check()`. |
+| `detection.py` | `classify_response()` → `Verdict`, with vendor attribution and evidence. |
+| `evasion.py` | `EVASION_LEVELS` — the ladder; each rung says what it isolates. |
+| `journey.py` | `plan_visit()` — human-like navigation (referers, dwell, sampling). |
+| `schedule.py` | `build_schedule()` — non-uniform, jittered arrivals across a window. |
+| `runner.py` | `AuditRunner` — async execution, ceilings, progress events, cancellation. |
+| `report.py` | Findings, text/HTML/JSON/CSV export. |
+| `config.py` | `AuditConfig`, `SafetyLimits`, `VisitResult`, `LevelResult`, `AuditReport`. |
+
+GUI: `pythonlib/camoufox/gui/audit_backend.py` (`AuditBackend` + `AuditVisitModel`)
+bound to the **Audit** tab in `qml/main.qml`. The audit runs on a `QThread` so the
+event loop stays responsive and Stop always works.
+
+CLI: `camoufox audit levels|run|report`.
+
+Invariants worth not breaking:
+
+- **No traffic without an acknowledged scope.** `TargetScope.check()` is the only
+  place that authorizes a request, and it raises rather than returning a flag.
+  The GUI and CLI both gate on it; do not add a path that skips it.
+- **`blocks` and `challenges` are different findings.** A Cloudflare
+  "Attention Required!" page with a 403 is a *block*; the same marker with a 200
+  is a *challenge*. Conflating them tells the operator to change the wrong
+  control. The status code decides; the body only says a defense page was served.
+- **A refusal is never `ALLOWED`.** A defense body marker on a 2xx is reported as
+  challenged, not allowed — otherwise a refusal inflates the bypass rate.
+- **Ceilings abort, they do not advise.** `max_requests`, `max_rps`,
+  `max_concurrency`, `max_arrivals_per_minute`, `max_per_proxy` and the
+  consecutive-error rule stop the run and record why.
+- **Scheduling must stay non-uniform.** Randomised, jittered inter-arrival times
+  are the point; do not replace the sampled distribution with a fixed interval.
+- **Secrets stay out of reports and logs.** Proxy passwords are redacted
+  (`ProxySession.describe()` / `Endpoint.redacted()`), and `extra_headers` is not
+  echoed into the report.
+
+Tests: `pythonlib/tests/test_audit.py` — runs against a real `ThreadingHTTPServer`
+that behaves like a small WAF, so HTTP, classification, scheduling, ceilings and
+reporting are all exercised for real. No mocks and no real internet.

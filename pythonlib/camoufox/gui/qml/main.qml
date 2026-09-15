@@ -194,6 +194,7 @@ ApplicationWindow {
         property alias text: inp.text
         property alias input: inp
         property string placeholder: ""
+        signal editingFinished
 
         width: Math.round(160 * scale)
         height: row - s2
@@ -211,6 +212,7 @@ ApplicationWindow {
             font.family: fontMain
             font.pixelSize: textSm
             verticalAlignment: Text.AlignVCenter
+            onEditingFinished: parent.editingFinished()
         }
 
         Muted {
@@ -516,7 +518,7 @@ ApplicationWindow {
                 anchors.verticalCenter: parent.verticalCenter
 
                 Repeater {
-                    model: ["Browsers", "GeoIP", "Info"]
+                    model: ["Browsers", "GeoIP", "Info", "Audit"]
 
                     Rectangle {
                         width: tabLbl.width + s4 * 2
@@ -1319,6 +1321,684 @@ ApplicationWindow {
                         }
 
                         T { text: Math.round(scaleSlider.value * 100) + "%" }
+                    }
+                }
+
+                // Audit
+                Rectangle {
+                    color: c.bg
+
+                    RowLayout {
+                        anchors.fill: parent
+                        spacing: 0
+
+                        // ---- left: configuration ----
+                        Rectangle {
+                            Layout.preferredWidth: Math.round(330 * scale)
+                            Layout.fillHeight: true
+                            color: c.bg
+
+                            ColumnLayout {
+                                anchors.fill: parent
+                                spacing: 0
+
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    height: row
+                                    color: c.fg
+                                    Rule { anchors.bottom: parent.bottom }
+                                    Header {
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: s3
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: "AUDIT TARGET"
+                                    }
+                                }
+
+                                Flickable {
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    contentHeight: cfgCol.implicitHeight + s4
+                                    clip: true
+                                    boundsBehavior: Flickable.StopAtBounds
+
+                                    ColumnLayout {
+                                        id: cfgCol
+                                        width: parent.width
+                                        spacing: s2
+                                        anchors.margins: s3
+
+                                        Item { Layout.preferredHeight: s1 }
+
+                                        Muted {
+                                            Layout.leftMargin: s3
+                                            Layout.rightMargin: s3
+                                            Layout.fillWidth: true
+                                            wrapMode: Text.WordWrap
+                                            text: "Only audit a site you own or have written permission to test."
+                                        }
+
+                                        Header {
+                                            Layout.leftMargin: s3
+                                            text: "TARGET URL"
+                                        }
+                                        Input {
+                                            Layout.leftMargin: s3
+                                            Layout.rightMargin: s3
+                                            Layout.fillWidth: true
+                                            placeholder: "https://staging.example.com/"
+                                            Component.onCompleted: text = auditBackend.target
+                                            onTextChanged: auditBackend.setTarget(text)
+                                        }
+
+                                        Header {
+                                            Layout.leftMargin: s3
+                                            text: "AUTHORIZED HOSTS"
+                                        }
+                                        Input {
+                                            Layout.leftMargin: s3
+                                            Layout.rightMargin: s3
+                                            Layout.fillWidth: true
+                                            placeholder: "example.com"
+                                            Component.onCompleted: text = auditBackend.scopeHosts
+                                            onTextChanged: auditBackend.setScopeHosts(text)
+                                        }
+                                        RowLayout {
+                                            Layout.leftMargin: s3
+                                            spacing: s2
+                                            CheckBox {
+                                                id: subdomainsBox
+                                                text: "Include subdomains"
+                                                checked: auditBackend.allowSubdomains
+                                                onToggled: auditBackend.setAllowSubdomains(checked)
+                                            }
+                                        }
+
+                                        // Authorization gate
+                                        Rectangle {
+                                            Layout.leftMargin: s3
+                                            Layout.rightMargin: s3
+                                            Layout.fillWidth: true
+                                            implicitHeight: ackCol.implicitHeight + s3 * 2
+                                            color: auditBackend.acknowledged ? "#1e2a1e" : "#2a1e1e"
+                                            radius: s1
+                                            border.color: auditBackend.acknowledged ? c.ok : c.err
+                                            border.width: 1
+
+                                            ColumnLayout {
+                                                id: ackCol
+                                                anchors.left: parent.left
+                                                anchors.right: parent.right
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                anchors.margins: s2
+                                                spacing: s1
+
+                                                CheckBox {
+                                                    id: ackBox
+                                                    text: "I am authorized to test this target"
+                                                    checked: auditBackend.acknowledged
+                                                    onToggled: auditBackend.setAcknowledged(checked)
+                                                }
+                                                Input {
+                                                    Layout.fillWidth: true
+                                                    placeholder: "Ticket / approval reference"
+                                                    Component.onCompleted: text = auditBackend.acknowledgmentNote
+                                                    onTextChanged: auditBackend.setAcknowledgmentNote(text)
+                                                }
+                                            }
+                                        }
+
+                                        Rule {
+                                            Layout.leftMargin: s3
+                                            Layout.rightMargin: s3
+                                            Layout.fillWidth: true
+                                        }
+
+                                        Header {
+                                            Layout.leftMargin: s3
+                                            text: "TRAFFIC PLAN"
+                                        }
+
+                                        GridLayout {
+                                            Layout.leftMargin: s3
+                                            Layout.rightMargin: s3
+                                            Layout.fillWidth: true
+                                            columns: 2
+                                            columnSpacing: s2
+                                            rowSpacing: s1
+
+                                            Muted { text: "Visitors" }
+                                            Input {
+                                                Layout.fillWidth: true
+                                                text: auditBackend.visitors
+                                                input.validator: IntValidator { bottom: 0; top: 1000000 }
+                                                onEditingFinished: if (text.length) auditBackend.setVisitors(parseInt(text))
+                                            }
+
+                                            Muted { text: "Over (hours)" }
+                                            Input {
+                                                Layout.fillWidth: true
+                                                text: auditBackend.hours
+                                                input.validator: DoubleValidator { bottom: 0.01; top: 8760 }
+                                                onEditingFinished: if (text.length) auditBackend.setHours(parseFloat(text))
+                                            }
+
+                                            Muted { text: "Arrival pattern" }
+                                            Combo {
+                                                Layout.fillWidth: true
+                                                model: auditBackend.patternOptions
+                                                currentIndex: auditBackend.patternIndex
+                                                onActivated: auditBackend.setPatternIndex(currentIndex)
+                                            }
+
+                                            Muted { text: "Max evasion level" }
+                                            Combo {
+                                                Layout.fillWidth: true
+                                                model: ["0 - Naive HTTP", "1 - Headless", "2 - Headers", "3 - Fingerprint", "4 - Proxy rotation", "5 - Behavior", "6 - Persistent"]
+                                                currentIndex: auditBackend.maxLevel
+                                                onActivated: auditBackend.setMaxLevel(currentIndex)
+                                            }
+
+                                            Muted { text: "Seed (optional)" }
+                                            Input {
+                                                Layout.fillWidth: true
+                                                placeholder: "random"
+                                                Component.onCompleted: text = auditBackend.seed
+                                                onTextChanged: auditBackend.setSeed(text)
+                                            }
+                                        }
+
+                                        // Schedule preview
+                                        Rectangle {
+                                            Layout.leftMargin: s3
+                                            Layout.rightMargin: s3
+                                            Layout.fillWidth: true
+                                            implicitHeight: prevCol.implicitHeight + s3
+                                            color: c.fg
+                                            radius: s1
+                                            border.color: c.border
+                                            border.width: 1
+
+                                            ColumnLayout {
+                                                id: prevCol
+                                                anchors.left: parent.left
+                                                anchors.right: parent.right
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                anchors.margins: s2
+                                                spacing: s1
+
+                                                Header { text: "ARRIVAL PREVIEW" }
+
+                                                Row {
+                                                    spacing: 2
+                                                    Repeater {
+                                                        model: auditBackend.schedulePreview
+                                                        Rectangle {
+                                                            width: Math.max(2, Math.round((prevCol.width - s4) / 24) - 2)
+                                                            height: Math.max(3, Math.round(28 * (modelData / Math.max(1, auditBackend.maxPreview()))))
+                                                            anchors.bottom: parent.bottom
+                                                            color: c.accent
+                                                            opacity: 0.35 + 0.65 * (modelData / Math.max(1, auditBackend.maxPreview()))
+                                                        }
+                                                    }
+                                                }
+
+                                                Muted {
+                                                    Layout.fillWidth: true
+                                                    wrapMode: Text.WordWrap
+                                                    text: auditBackend.schedulePreviewSummary
+                                                }
+                                            }
+                                        }
+
+                                        Rule {
+                                            Layout.leftMargin: s3
+                                            Layout.rightMargin: s3
+                                            Layout.fillWidth: true
+                                        }
+
+                                        Header {
+                                            Layout.leftMargin: s3
+                                            text: "PROXY"
+                                        }
+
+                                        GridLayout {
+                                            Layout.leftMargin: s3
+                                            Layout.rightMargin: s3
+                                            Layout.fillWidth: true
+                                            columns: 2
+                                            columnSpacing: s2
+                                            rowSpacing: s1
+
+                                            Muted { text: "Mode" }
+                                            Combo {
+                                                Layout.fillWidth: true
+                                                model: auditBackend.proxyModeOptions
+                                                currentIndex: auditBackend.proxyModeIndex
+                                                onActivated: auditBackend.setProxyModeIndex(currentIndex)
+                                            }
+
+                                            Muted {
+                                                visible: auditBackend.proxyModeIndex === 1
+                                                text: "List file"
+                                            }
+                                            RowLayout {
+                                                visible: auditBackend.proxyModeIndex === 1
+                                                Layout.fillWidth: true
+                                                spacing: s1
+                                                Input {
+                                                    id: proxyFileInput
+                                                    Layout.fillWidth: true
+                                                    placeholder: "/path/to/proxies.txt"
+                                                    Component.onCompleted: text = auditBackend.proxyFile
+                                                    onTextChanged: auditBackend.setProxyFile(text)
+                                                }
+                                                Btn {
+                                                    text: "Check"
+                                                    onClicked: {
+                                                        var r = auditBackend.validateProxyFile(proxyFileInput.text)
+                                                        proxyStatus.text = r.message
+                                                        proxyStatus.color = r.ok ? c.ok : c.err
+                                                    }
+                                                }
+                                            }
+
+                                            Muted {
+                                                visible: auditBackend.proxyModeIndex === 2
+                                                text: "Gateway"
+                                            }
+                                            Input {
+                                                visible: auditBackend.proxyModeIndex === 2
+                                                Layout.fillWidth: true
+                                                placeholder: "http://user-session-{session}:pass@host:8000"
+                                                Component.onCompleted: text = auditBackend.proxyGateway
+                                                onTextChanged: auditBackend.setProxyGateway(text)
+                                            }
+
+                                            Muted {
+                                                visible: auditBackend.proxyModeIndex === 1
+                                                text: "Policy"
+                                            }
+                                            Combo {
+                                                visible: auditBackend.proxyModeIndex === 1
+                                                Layout.fillWidth: true
+                                                model: auditBackend.proxyPolicyOptions
+                                                currentIndex: auditBackend.proxyPolicyIndex
+                                                onActivated: auditBackend.setProxyPolicyIndex(currentIndex)
+                                            }
+
+                                            Muted { text: "Per-proxy cap" }
+                                            Input {
+                                                Layout.fillWidth: true
+                                                text: auditBackend.maxPerProxy
+                                                input.validator: IntValidator { bottom: 0; top: 100000 }
+                                                onEditingFinished: if (text.length) auditBackend.setMaxPerProxy(parseInt(text))
+                                            }
+                                        }
+
+                                        Muted {
+                                            id: proxyStatus
+                                            Layout.leftMargin: s3
+                                            Layout.rightMargin: s3
+                                            Layout.fillWidth: true
+                                            wrapMode: Text.WordWrap
+                                            text: ""
+                                        }
+
+                                        Rule {
+                                            Layout.leftMargin: s3
+                                            Layout.rightMargin: s3
+                                            Layout.fillWidth: true
+                                        }
+
+                                        Header {
+                                            Layout.leftMargin: s3
+                                            text: "SAFETY CEILINGS"
+                                        }
+                                        Muted {
+                                            Layout.leftMargin: s3
+                                            Layout.rightMargin: s3
+                                            Layout.fillWidth: true
+                                            wrapMode: Text.WordWrap
+                                            text: "The audit stops when a ceiling is reached, rather than continuing."
+                                        }
+
+                                        GridLayout {
+                                            Layout.leftMargin: s3
+                                            Layout.rightMargin: s3
+                                            Layout.fillWidth: true
+                                            columns: 2
+                                            columnSpacing: s2
+                                            rowSpacing: s1
+
+                                            Muted { text: "Max requests" }
+                                            Input {
+                                                Layout.fillWidth: true
+                                                text: auditBackend.maxRequests
+                                                input.validator: IntValidator { bottom: 0; top: 100000000 }
+                                                onEditingFinished: if (text.length) auditBackend.setMaxRequests(parseInt(text))
+                                            }
+
+                                            Muted { text: "Max requests/sec" }
+                                            Input {
+                                                Layout.fillWidth: true
+                                                text: auditBackend.maxRps
+                                                input.validator: DoubleValidator { bottom: 0; top: 100000 }
+                                                onEditingFinished: if (text.length) auditBackend.setMaxRps(parseFloat(text))
+                                            }
+
+                                            Muted { text: "Max concurrent" }
+                                            Input {
+                                                Layout.fillWidth: true
+                                                text: auditBackend.maxConcurrency
+                                                input.validator: IntValidator { bottom: 1; top: 512 }
+                                                onEditingFinished: if (text.length) auditBackend.setMaxConcurrency(parseInt(text))
+                                            }
+
+                                            Muted { text: "Max arrivals/min" }
+                                            Input {
+                                                Layout.fillWidth: true
+                                                text: auditBackend.maxPerMinute
+                                                input.validator: IntValidator { bottom: 1; top: 100000 }
+                                                onEditingFinished: if (text.length) auditBackend.setMaxPerMinute(parseInt(text))
+                                            }
+
+                                            Muted { text: "Report directory" }
+                                            Input {
+                                                Layout.fillWidth: true
+                                                placeholder: "optional"
+                                                Component.onCompleted: text = auditBackend.outDir
+                                                onTextChanged: auditBackend.setOutDir(text)
+                                            }
+                                        }
+
+                                        CheckBox {
+                                            Layout.leftMargin: s3
+                                            text: "Headless browsers"
+                                            checked: auditBackend.headless
+                                            onToggled: auditBackend.setHeadless(checked)
+                                        }
+
+                                        Item { Layout.preferredHeight: s2 }
+                                    }
+                                }
+                            }
+                        }
+
+                        // ---- right: run + results ----
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            color: c.bg
+
+                            ColumnLayout {
+                                anchors.fill: parent
+                                spacing: 0
+
+                                // Run bar
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    height: row
+                                    color: c.fg
+                                    Rule { anchors.bottom: parent.bottom }
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: s3
+                                        anchors.rightMargin: s3
+                                        spacing: s2
+
+                                        Btn {
+                                            text: "Start audit"
+                                            icon: "\uE768"
+                                            accent: auditBackend.canRun ? c.accent : c.muted
+                                            on: auditBackend.canRun
+                                            onClicked: auditBackend.start()
+                                        }
+
+                                        Btn {
+                                            text: "Stop"
+                                            accent: c.err
+                                            on: auditBackend.running
+                                            onClicked: auditBackend.stop()
+                                        }
+
+                                        Btn {
+                                            text: "Clear"
+                                            on: !auditBackend.running
+                                            onClicked: auditBackend.clearResults()
+                                        }
+
+                                        Item { Layout.fillWidth: true }
+
+                                        T {
+                                            visible: auditBackend.running
+                                            text: "running..."
+                                            color: c.accent
+                                        }
+
+                                        T {
+                                            visible: auditBackend.error.length > 0
+                                            text: auditBackend.error
+                                            color: c.err
+                                            Layout.maximumWidth: Math.round(320 * scale)
+                                            elide: Text.ElideRight
+                                        }
+                                    }
+                                }
+
+                                // Summary strip
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    visible: !!auditBackend.summary
+                                             && auditBackend.summary.visits !== undefined
+                                    implicitHeight: sumRow.implicitHeight + s2
+                                    color: c.fg
+
+                                    RowLayout {
+                                        id: sumRow
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        anchors.margins: s3
+                                        spacing: s4
+
+                                        T {
+                                            text: "Visits: " + (auditBackend.summary.visits || 0)
+                                        }
+                                        T {
+                                            text: "Requests: " + (auditBackend.summary.requests || 0)
+                                        }
+                                        T {
+                                            text: "Duration: " + (auditBackend.summary.duration || 0) + "s"
+                                        }
+                                        T {
+                                            visible: auditBackend.summary.aborted === true
+                                            text: "ABORTED"
+                                            color: c.err
+                                        }
+                                        Item { Layout.fillWidth: true }
+                                    }
+                                }
+
+                                // Findings
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    visible: auditBackend.findings.length > 0
+                                    implicitHeight: Math.min(
+                                        Math.round(150 * scale),
+                                        findCol.implicitHeight + s3)
+                                    color: c.bg
+
+                                    ColumnLayout {
+                                        id: findCol
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.margins: s3
+                                        spacing: s1
+
+                                        Header { text: "FINDINGS" }
+
+                                        Repeater {
+                                            model: auditBackend.findings
+                                            Muted {
+                                                Layout.fillWidth: true
+                                                wrapMode: Text.WordWrap
+                                                text: "* " + modelData
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Level summary
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    visible: !!auditBackend.summary
+                                             && !!auditBackend.summary.levels
+                                             && auditBackend.summary.levels.length > 0
+                                    implicitHeight: lvlRow.implicitHeight + s3
+                                    color: c.fg
+
+                                    Row {
+                                        id: lvlRow
+                                        anchors.left: parent.left
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        anchors.leftMargin: s3
+                                        spacing: s4
+
+                                        Repeater {
+                                            model: auditBackend.summary.levels || []
+                                            Column {
+                                                spacing: 2
+                                                T { text: modelData.name }
+                                                Muted {
+                                                    text: "bypass " + Math.round(modelData.bypassRate * 100) + "%  detected "
+                                                          + Math.round(modelData.detectionRate * 100) + "%"
+                                                }
+                                                Muted {
+                                                    visible: !!modelData.vendors
+                                                    text: modelData.vendors
+                                                    color: c.accent
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Visits table
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+                                    color: c.bg
+                                    clip: true
+
+                                    ListView {
+                                        id: visitList
+                                        anchors.fill: parent
+                                        anchors.margins: s2
+                                        clip: true
+                                        model: auditBackend.visits
+                                        boundsBehavior: Flickable.StopAtBounds
+                                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                                        delegate: Rectangle {
+                                            // Declaring required properties opts out of the
+                                            // implicit `index`/`model` context properties, so
+                                            // `index` has to be requested explicitly.
+                                            required property int index
+                                            required property int visitorIndex
+                                            required property string levelName
+                                            required property string verdict
+                                            required property var httpStatus
+                                            required property string reason
+                                            required property color verdictColor
+                                            required property string source
+                                            required property string proxyLabel
+
+                                            width: visitList.width
+                                            height: row
+                                            color: index % 2 ? c.fg : "transparent"
+
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.leftMargin: s2
+                                                anchors.rightMargin: s2
+                                                spacing: s2
+
+                                                T {
+                                                    text: "#" + visitorIndex
+                                                    Layout.preferredWidth: Math.round(50 * scale)
+                                                    color: c.muted
+                                                }
+                                                T {
+                                                    text: levelName
+                                                    Layout.preferredWidth: Math.round(150 * scale)
+                                                    elide: Text.ElideRight
+                                                }
+                                                T {
+                                                    text: verdict
+                                                    color: verdictColor
+                                                    Layout.preferredWidth: Math.round(90 * scale)
+                                                }
+                                                T {
+                                                    text: httpStatus
+                                                    Layout.preferredWidth: Math.round(40 * scale)
+                                                    color: c.muted
+                                                }
+                                                T {
+                                                    text: source
+                                                    Layout.preferredWidth: Math.round(60 * scale)
+                                                    color: c.dim
+                                                }
+                                                Muted {
+                                                    Layout.fillWidth: true
+                                                    text: reason
+                                                    elide: Text.ElideRight
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Log
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    implicitHeight: Math.round(96 * scale)
+                                    color: c.fg
+                                    Rule { anchors.top: parent.top }
+
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: s2
+                                        spacing: 0
+
+                                        Header { text: "LOG" }
+
+                                        Flickable {
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+                                            clip: true
+                                            contentHeight: logCol.implicitHeight
+                                            boundsBehavior: Flickable.StopAtBounds
+
+                                            Column {
+                                                id: logCol
+                                                width: parent.width
+                                                Repeater {
+                                                    model: auditBackend.log
+                                                    Muted {
+                                                        width: logCol.width
+                                                        text: modelData
+                                                        elide: Text.ElideRight
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

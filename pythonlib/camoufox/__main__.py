@@ -813,6 +813,226 @@ def server():
     launch_server()
 
 
+@cli.group(name="audit")
+def audit_group():
+    """
+    Audit your own site's WAF and bot defenses
+
+    \b
+    Runs an ordered ladder of client postures against a target you are
+    authorized to test, and reports which defense actually stopped which rung.
+    Traffic is capped by request, rate, concurrency and per-minute ceilings.
+
+    \b
+    Only run this against a site you own or have written permission to test.
+    """
+
+
+@audit_group.command(name="levels")
+def audit_levels() -> None:
+    """
+    List the evasion ladder and what each rung isolates
+
+    \b
+    Example:
+      camoufox audit levels
+    """
+    from .audit import EVASION_LEVELS
+
+    for level in EVASION_LEVELS:
+        rprint(f"{level.name}", fg="cyan")
+        rprint(f"  {level.description}", fg="white")
+        rprint(f"  isolates: {level.isolates}", fg="dim")
+        click.echo()
+
+
+@audit_group.command(name="run")
+@click.option("--target", required=True, help="Target URL to audit, e.g. https://staging.example.com/")
+@click.option(
+    "--scope",
+    "scope_hosts",
+    multiple=True,
+    help="Authorized host (repeatable). Defaults to the target's host.",
+)
+@click.option("--allow-subdomains", is_flag=True, help="Also authorize subdomains of the scoped hosts.")
+@click.option(
+    "--i-am-authorized",
+    "authorized",
+    is_flag=True,
+    help="Confirm you own the target or have written permission to test it. Required.",
+)
+@click.option("--visitors", type=int, default=100, show_default=True, help="Number of visitors to schedule.")
+@click.option("--hours", type=float, default=1.0, show_default=True, help="Window to spread visitors across.")
+@click.option(
+    "--pattern",
+    type=click.Choice(["human_diurnal", "constant", "ramp", "spike", "sustained"]),
+    default="human_diurnal",
+    show_default=True,
+    help="Arrival distribution across the window.",
+)
+@click.option("--max-level", type=int, default=3, show_default=True, help="Highest rung of the ladder to climb (0-6).")
+@click.option("--level", "levels", multiple=True, type=int, help="Run exactly these rungs (repeatable).")
+@click.option("--proxy-file", type=click.Path(exists=True, dir_okay=False), default=None, help="Proxy list, one per line.")
+@click.option("--proxy-gateway", default=None, help="Rotating proxy gateway URL, may contain {session}.")
+@click.option("--proxy-policy", default="round_robin", show_default=True, help="Pool selection policy for file mode.")
+@click.option("--max-requests", type=int, default=20000, show_default=True, help="Hard ceiling on requests (0 = unlimited).")
+@click.option("--max-rps", type=float, default=10.0, show_default=True, help="Hard ceiling on requests per second (0 = unlimited).")
+@click.option("--max-concurrency", type=int, default=8, show_default=True, help="Hard ceiling on concurrent visitors.")
+@click.option("--max-per-minute", type=int, default=60, show_default=True, help="Hard ceiling on arrivals per minute.")
+@click.option("--max-per-proxy", type=int, default=0, show_default=True, help="Ceiling per proxy exit (0 = unlimited).")
+@click.option("--headful", is_flag=True, help="Run browsers with a visible window.")
+@click.option("--seed", type=int, default=None, help="Seed for reproducible scheduling and behavior.")
+@click.option("--out", type=click.Path(file_okay=False), default=None, help="Directory for JSON/CSV/HTML reports.")
+@click.option("--quiet", is_flag=True, help="Only print the final report.")
+def audit_run(
+    target, scope_hosts, allow_subdomains, authorized, visitors, hours, pattern,
+    max_level, levels, proxy_file, proxy_gateway, proxy_policy,
+    max_requests, max_rps, max_concurrency, max_per_minute, max_per_proxy,
+    headful, seed, out, quiet,
+) -> None:
+    """
+    Run a WAF / bot-defense audit against an authorized target
+
+    \b
+    Examples:
+      camoufox audit run --target https://staging.example.com/ --i-am-authorized
+      camoufox audit run --target https://example.com/ --i-am-authorized \\
+          --visitors 1000 --hours 24
+      camoufox audit run --target https://example.com/ --i-am-authorized \\
+          --max-level 5 --proxy-file proxies.txt --out ./audit
+    """
+    import asyncio
+
+    from .audit import AuditConfig, AuditRunner, SafetyLimits, TargetScope
+    from .audit.report import render_text, write_report
+
+    if not authorized:
+        rprint(
+            "Refusing to run: pass --i-am-authorized to confirm you own the target "
+            "or have written permission to test it.",
+            fg="red",
+        )
+        raise SystemExit(2)
+
+    scope = TargetScope.from_urls(
+        list(scope_hosts) or [target],
+        allow_subdomains=allow_subdomains,
+        acknowledged=True,
+    )
+
+    proxy = None
+    if proxy_gateway:
+        proxy = {"mode": "gateway", "gateway": proxy_gateway}
+    elif proxy_file:
+        proxy = {"mode": "file", "file": proxy_file, "policy": proxy_policy}
+
+    config = AuditConfig(
+        target_url=target,
+        scope=scope,
+        max_evasion_level=max_level,
+        levels=list(levels) or None,
+        visitor_count=visitors,
+        duration_hours=hours,
+        pattern=pattern,
+        limits=SafetyLimits(
+            max_requests=max_requests,
+            max_rps=max_rps,
+            max_concurrency=max_concurrency,
+            max_arrivals_per_minute=max_per_minute,
+            max_per_proxy=max_per_proxy,
+        ),
+        proxy=proxy,
+        seed=seed,
+        headless=not headful,
+    )
+
+    problems = config.validate()
+    if problems:
+        for problem in problems:
+            rprint(f"Configuration error: {problem}", fg="red")
+        raise SystemExit(2)
+
+    rprint(f"Auditing {target}", fg="cyan")
+    rprint(f"  scope: {scope.describe()}", fg="dim")
+    rprint(f"  {visitors} visitors over {hours:g}h, pattern {pattern}", fg="dim")
+    rprint(
+        f"  ceilings: {max_requests} requests, {max_rps}/s, "
+        f"{max_concurrency} concurrent, {max_per_minute}/min",
+        fg="dim",
+    )
+    click.echo()
+
+    def on_progress(payload):
+        if quiet:
+            return
+        event = payload.get("event")
+        if event == "level_start":
+            rprint(f"[{payload['level_name']}] starting {payload['scheduled']} visits", fg="cyan")
+        elif event == "visit":
+            visit = payload["visit"]
+            verdict = visit["verdict"]
+            color = "green" if verdict == "allowed" else "yellow" if verdict in ("challenged", "rate_limited") else "red"
+            rprint(
+                f"  visit {visit['visitor_index']:>4}  {verdict:<12} "
+                f"{visit.get('http_status') or '-':>4}  {visit.get('reason', '')[:60]}",
+                fg=color,
+            )
+        elif event == "level_end":
+            level = payload["level"]
+            rprint(
+                f"[{level['level_name']}] bypass {level['bypass_rate']:.0%}, "
+                f"detected {level['detection_rate']:.0%}",
+                fg="cyan",
+            )
+            click.echo()
+
+    report = asyncio.run(AuditRunner(config, on_progress=on_progress).run())
+
+    click.echo()
+    rprint(render_text(report), fg="white")
+
+    if out:
+        written = write_report(report, out)
+        click.echo()
+        for fmt, path in written.items():
+            rprint(f"  {fmt:<5} -> {path}", fg="green")
+
+    if report.aborted:
+        raise SystemExit(3)
+
+
+@audit_group.command(name="report")
+@click.argument("json_file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--out", type=click.Path(file_okay=False), default=None, help="Re-export into this directory.")
+def audit_report(json_file: str, out: str) -> None:
+    """
+    Re-render a saved audit JSON as a report
+
+    \b
+    Example:
+      camoufox audit report audit.json --out ./rerendered
+    """
+    import json as _json
+
+    from .audit.report import render_text, write_report
+
+    payload = _json.loads(click.open_file(json_file, "r").read())
+    rprint(f"Loaded audit of {payload.get('target_url')}", fg="cyan")
+    rprint(f"  visits: {payload.get('totals', {}).get('visits')}", fg="dim")
+    click.echo()
+    for finding in payload.get("findings", []):
+        rprint(f"  * {finding}", fg="white")
+    click.echo()
+
+    if out:
+        from pathlib import Path
+
+        base = Path(out)
+        base.mkdir(parents=True, exist_ok=True)
+        (base / "audit.json").write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+        rprint(f"  re-exported to {out}", fg="green")
+
+
 @cli.command(name="gui")
 @click.option("--debug", is_flag=True, help="Enable debug options in the GUI.")
 def gui(debug):

@@ -33,6 +33,7 @@ from ..multiversion import (
     set_active,
 )
 from ..pkgman import RepoConfig, unzip, verify_sha256, webdl
+from .audit_backend import AuditBackend
 
 # Workers
 
@@ -1244,6 +1245,11 @@ def main(debug=False):
     backend = Backend()
     backend.setParent(engine)
     engine.rootContext().setContextProperty("backend", backend)
+
+    audit_backend = AuditBackend()
+    audit_backend.setParent(engine)
+    engine.rootContext().setContextProperty("auditBackend", audit_backend)
+
     engine.load(QUrl.fromLocalFile(str(Path(__file__).parent / "qml/main.qml")))
 
     if not engine.rootObjects():

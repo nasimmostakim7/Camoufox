@@ -810,6 +810,47 @@ Patches can be edited, created, removed, and managed through here.
 2. Select the patch you'd like to edit. Your workspace will be reset to the state of the selected patch.
 3. After you're done making changes, hit **Write workspace to patch** and overwrite the existing patch file.
 
+### Auditing your own WAF and bot defenses
+
+This fork adds an audit tool for testing a site you own or are authorized to test,
+to find out which of its defenses actually hold as a client looks less like a bot.
+
+It is an attribution tool, not a bypass bot: instead of a single pass/fail, it runs
+an ordered ladder of client postures (plain HTTP → headless browser → consistent
+headers → fingerprint → proxy rotation → human behavior → persistent identity) and
+reports which rung your defenses first stop, and which rungs get through. Each
+finding points at one control, so you know what to change.
+
+```bash
+# See what each rung of the ladder isolates
+camoufox audit levels
+
+# 1000 visitors spread across a full day, levels 0-3
+camoufox audit run --target https://example.com/ --i-am-authorized \
+    --visitors 1000 --hours 24
+
+# Climb further, rotating one proxy per visit
+camoufox audit run --target https://example.com/ --i-am-authorized \
+    --max-level 5 --proxy-file proxies.txt --out ./audit
+```
+
+Visitors do not arrive at once and do not arrive on a fixed interval: arrival times
+are sampled from a distribution (a day curve by default) with random jitter, so the
+traffic has the irregular spacing real visitors have. Safety ceilings on total
+requests, requests per second, concurrency, burst rate and per-proxy volume stop the
+run rather than being advisory.
+
+The same controls are available in the GUI (`camoufox gui`) on the **Audit** tab,
+including the proxy settings and an arrival preview showing how the chosen visitor
+count spreads across the window.
+
+Reports are written as JSON, CSV, a self-contained HTML file and plain text.
+
+See [docs/auditing-waf-defenses.md](docs/auditing-waf-defenses.md) for the full guide.
+
+**Only run this against a site you own or have written permission to test.** The tool
+requires an explicit authorization acknowledgment and will not start without one.
+
 ---
 
 ## Leak Debugging

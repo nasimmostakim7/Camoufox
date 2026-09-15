@@ -1,0 +1,342 @@
+"""
+Turn an audit into something an operator can act on.
+
+The report leads with the attribution, not with totals: which rung the defenses
+first held, which defenses were in play, and which rungs got through. Totals
+without attribution invite the wrong fix.
+
+Exports are dependency-free (JSON, CSV, and a self-contained HTML file) so an
+audit can be handed to someone who does not have this package installed.
+"""
+
+from __future__ import annotations
+
+import csv
+import html
+import io
+import json
+from pathlib import Path
+from typing import Dict, List, Optional
+
+from .config import AuditReport, LevelResult
+from .detection import Verdict
+
+__all__ = [
+    "build_findings",
+    "render_text",
+    "render_html",
+    "write_json",
+    "write_csv",
+    "write_html",
+    "write_report",
+]
+
+_VERDICT_LABEL = {
+    Verdict.ALLOWED: "allowed through",
+    Verdict.CHALLENGED: "challenged",
+    Verdict.RATE_LIMITED: "rate limited",
+    Verdict.BLOCKED: "blocked",
+    Verdict.ERROR: "error",
+}
+
+
+def build_findings(report: AuditReport) -> List[str]:
+    """
+    Plain-language conclusions, ordered by how actionable they are.
+
+    These are the lines an operator reads first, so each one names a control and
+    a next step rather than restating a number.
+    """
+    findings: List[str] = []
+    levels_seen = [lr for lr in report.levels if lr.visits]
+
+    if not levels_seen:
+        return ["No visits completed; nothing to conclude."]
+
+    effective = report.first_effective_level()
+    bypassing = report.highest_bypassing_level()
+
+    if effective is None:
+        findings.append(
+            "No rung of the ladder was reliably stopped. As tested, the defenses did "
+            "not distinguish between a plain HTTP client and a fully masked, "
+            "rotating, human-behaving one -- only the cheapest case was refused."
+        )
+    else:
+        findings.append(
+            f"The defenses first hold at {effective.level.name} "
+            f"({effective.detection_rate:.0%} of visits stopped there). {effective.level.isolates}"
+        )
+
+    if effective is not None and effective.level.id > 0:
+        earlier = [lr for lr in levels_seen if lr.level.id < effective.level.id]
+        dead = [lr for lr in earlier if lr.bypass_rate >= 0.9]
+        if dead:
+            names = ", ".join(lr.level.name for lr in dead)
+            findings.append(
+                f"These rungs were fully defeated and are doing no work against this "
+                f"client: {names}. Effort spent here is better spent on "
+                f"{effective.level.name}."
+            )
+
+    if bypassing is not None:
+        findings.append(
+            f"{bypassing.level.name} reached the site cleanly on "
+            f"{bypassing.bypass_rate:.0%} of visits. Whatever is configured at or "
+            f"below that rung is not filtering this traffic."
+        )
+
+    vendors: Dict[str, int] = {}
+    for lr in levels_seen:
+        for vendor in lr.vendors_seen():
+            vendors[vendor] = vendors.get(vendor, 0) + 1
+    if vendors:
+        top = sorted(vendors.items(), key=lambda kv: -kv[1])[:3]
+        findings.append(
+            "Defense products observed in responses: "
+            + ", ".join(
+                f"{name} (in {count} level{'s' if count != 1 else ''})"
+                for name, count in top
+            )
+            + "."
+        )
+    else:
+        findings.append(
+            "No known WAF or bot-defense product signature appeared in any response. "
+            "Either the responses carried no identifying headers, or the traffic never "
+            "reached a product that would recognize it -- worth confirming before "
+            "trusting an 'allowed' result."
+        )
+
+    if report.aborted:
+        findings.append(
+            f"The audit stopped early: {report.abort_reason}. The levels below are "
+            f"partial, so treat their rates as indicative rather than final."
+        )
+
+    errors = sum(lr.counts().get(Verdict.ERROR, 0) for lr in levels_seen)
+    total = sum(lr.completed for lr in levels_seen)
+    if total and errors / total > 0.2:
+        findings.append(
+            f"{errors} of {total} visits ended in a transport error. That is a lot, and "
+            f"it usually means the target or a proxy refused connections outright "
+            f"rather than serving a defense page. Check connectivity before drawing "
+            f"conclusions from the detection rates."
+        )
+
+    for warning in report.schedule_warnings:
+        findings.append(f"Scheduling caveat: {warning}")
+
+    return findings
+
+
+def render_text(report: AuditReport) -> str:
+    lines: List[str] = []
+    add = lines.append
+
+    add("=" * 72)
+    add("WAF / BOT-DEFENSE AUDIT")
+    add("=" * 72)
+    add(f"Target      : {report.config.target_url}")
+    add(f"Scope       : {report.config.scope.describe()}")
+    add(f"Visitors    : {report.config.visitor_count} over {report.config.duration_hours:g}h "
+        f"({report.config.pattern})")
+    add(f"Duration    : {report.finished_at - report.started_at:.1f}s")
+    add(f"Requests    : {report.total_requests}")
+    add("")
+
+    add("-" * 72)
+    add("FINDINGS")
+    add("-" * 72)
+    for finding in build_findings(report):
+        add(f"  * {finding}")
+    add("")
+
+    add("-" * 72)
+    add("EVASION LADDER")
+    add("-" * 72)
+    add(f"  {'level':<28} {'visits':>7} {'allowed':>8} {'detected':>9}  verdict mix")
+    for lr in report.levels:
+        counts = lr.counts()
+        mix = ", ".join(
+            f"{_VERDICT_LABEL[v]}={counts.get(v, 0)}"
+            for v in Verdict.ALL
+            if counts.get(v, 0)
+        )
+        add(f"  {lr.level.name:<28} {lr.completed:>7} {lr.allowed:>8} {lr.detected:>9}  {mix}")
+    add("")
+
+    for lr in report.levels:
+        if not lr.visits:
+            continue
+        add("-" * 72)
+        add(f"{lr.level.name}")
+        add(f"  {lr.level.description}")
+        add(f"  isolates: {lr.level.isolates}")
+        add(f"  bypass {lr.bypass_rate:.0%} | detection {lr.detection_rate:.0%} | "
+            f"p95 {lr.p95_latency() if lr.p95_latency() is not None else 'n/a'}s")
+        if lr.vendors_seen():
+            add(f"  products: {', '.join(lr.vendors_seen())}")
+        if lr.aborted:
+            add(f"  ABORTED: {lr.abort_reason}")
+        add("")
+
+    return "\n".join(lines) + "\n"
+
+
+def write_json(report: AuditReport, path: str) -> Path:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = report.to_dict()
+    payload["findings"] = build_findings(report)
+    target.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    return target
+
+
+def write_csv(report: AuditReport, path: str) -> Path:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "visitor_index",
+            "level_id",
+            "level_name",
+            "verdict",
+            "detected",
+            "http_status",
+            "requests",
+            "pages",
+            "duration_s",
+            "source",
+            "referer",
+            "proxy",
+            "exit_ip",
+            "reason",
+            "vendors",
+        ]
+    )
+    for lr in report.levels:
+        for visit in lr.visits:
+            writer.writerow(
+                [
+                    visit.visitor_index,
+                    lr.level.id,
+                    lr.level.name,
+                    visit.verdict,
+                    visit.detected,
+                    visit.http_status if visit.http_status is not None else "",
+                    visit.requests_made,
+                    visit.pages_loaded,
+                    f"{visit.duration_s:.3f}",
+                    visit.source,
+                    visit.referer or "",
+                    visit.proxy_label or "",
+                    visit.exit_ip or "",
+                    visit.reason,
+                    ";".join(visit.vendors),
+                ]
+            )
+    target.write_text(buffer.getvalue(), encoding="utf-8")
+    return target
+
+
+def render_html(report: AuditReport) -> str:
+    """A self-contained report: no external CSS, JS or fonts."""
+    esc = html.escape
+    findings = build_findings(report)
+
+    rows = []
+    for lr in report.levels:
+        counts = lr.counts()
+        rows.append(
+            "<tr>"
+            f"<td>{esc(lr.level.name)}</td>"
+            f"<td class='n'>{lr.completed}</td>"
+            f"<td class='n ok'>{lr.bypass_rate:.0%}</td>"
+            f"<td class='n bad'>{lr.detection_rate:.0%}</td>"
+            f"<td>{esc(', '.join(f'{_VERDICT_LABEL[v]}={counts.get(v, 0)}' for v in Verdict.ALL if counts.get(v, 0)))}</td>"
+            f"<td>{esc(', '.join(lr.vendors_seen()) or '-')}</td>"
+            "</tr>"
+        )
+    effective = report.first_effective_level()
+    bypassing = report.highest_bypassing_level()
+
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>WAF audit - {esc(report.config.target_url)}</title>
+<style>
+ body {{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        margin: 0; padding: 2rem; background: #f6f7f9; color: #1a1d21; line-height: 1.5; }}
+ .wrap {{ max-width: 1000px; margin: 0 auto; }}
+ h1 {{ font-size: 1.5rem; margin: 0 0 .25rem; }}
+ h2 {{ font-size: 1.05rem; margin: 2rem 0 .6rem; text-transform: uppercase;
+       letter-spacing: .04em; color: #555; }}
+ .sub {{ color: #666; margin-bottom: 1.5rem; }}
+ .card {{ background: #fff; border: 1px solid #e3e6ea; border-radius: 8px;
+          padding: 1rem 1.25rem; margin-bottom: 1rem; }}
+ table {{ width: 100%; border-collapse: collapse; background: #fff;
+          border: 1px solid #e3e6ea; border-radius: 8px; overflow: hidden; }}
+ th, td {{ padding: .6rem .75rem; text-align: left; border-bottom: 1px solid #eef0f3;
+           font-size: .9rem; vertical-align: top; }}
+ th {{ background: #fafbfc; font-weight: 600; }}
+ tr:last-child td {{ border-bottom: none; }}
+ td.n {{ text-align: right; font-variant-numeric: tabular-nums; }}
+ td.ok {{ color: #0a7d32; }} td.bad {{ color: #b3211f; }}
+ ul {{ margin: .25rem 0 .25rem 1.1rem; padding: 0; }}
+ li {{ margin-bottom: .5rem; }}
+ .kv {{ display: grid; grid-template-columns: 11rem 1fr; gap: .35rem 1rem; font-size: .9rem; }}
+ .kv dt {{ color: #666; }} .kv dd {{ margin: 0; }}
+ .note {{ font-size: .83rem; color: #666; }}
+</style></head><body><div class="wrap">
+<h1>WAF / bot-defense audit</h1>
+<div class="sub">{esc(report.config.target_url)}</div>
+
+<div class="card"><dl class="kv">
+ <dt>Authorized scope</dt><dd>{esc(report.config.scope.describe())}</dd>
+ <dt>Visitors scheduled</dt><dd>{report.config.visitor_count} over {report.config.duration_hours:g}h ({esc(report.config.pattern)})</dd>
+ <dt>Visits completed</dt><dd>{report.total_visits}</dd>
+ <dt>Requests sent</dt><dd>{report.total_requests}</dd>
+ <dt>Wall duration</dt><dd>{report.finished_at - report.started_at:.1f}s</dd>
+ <dt>First holding rung</dt><dd>{esc(effective.level.name) if effective else 'none held'}</dd>
+ <dt>Highest rung that got through</dt><dd>{esc(bypassing.level.name) if bypassing else 'none got through'}</dd>
+</dl></div>
+
+<h2>Findings</h2>
+<div class="card"><ul>{"".join(f"<li>{esc(f)}</li>" for f in findings)}</ul></div>
+
+<h2>Evasion ladder</h2>
+<table><thead><tr>
+ <th>Level</th><th class="n">Visits</th><th class="n">Bypass</th>
+ <th class="n">Detected</th><th>Outcomes</th><th>Products seen</th>
+</tr></thead><tbody>{"".join(rows)}</tbody></table>
+
+<p class="note">Generated by the Camoufox audit tool. Verify the target was properly
+authorized before sharing this report.</p>
+</div></body></html>
+"""
+
+
+def write_html(report: AuditReport, path: str) -> Path:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(render_html(report), encoding="utf-8")
+    return target
+
+
+def write_report(report: AuditReport, out_dir: str, stem: str = "audit") -> Dict[str, str]:
+    """Write every format into `out_dir` and return {format: path}."""
+    base = Path(out_dir)
+    base.mkdir(parents=True, exist_ok=True)
+    return {
+        "json": str(write_json(report, str(base / f"{stem}.json"))),
+        "csv": str(write_csv(report, str(base / f"{stem}.csv"))),
+        "html": str(write_html(report, str(base / f"{stem}.html"))),
+        "text": str(_write_text_report(report, base / f"{stem}.txt")),
+    }
+
+
+def _write_text_report(report: AuditReport, path: Path) -> Path:
+    path.write_text(render_text(report), encoding="utf-8")
+    return path
