@@ -1046,5 +1046,131 @@ def path_cmd():
     click.echo(INSTALL_DIR)
 
 
+@cli.group(name="proxy")
+def proxy_group():
+    """
+    Inspect and test proxy rotation pools
+    """
+
+
+@proxy_group.command(name="check")
+@click.argument("file", type=click.Path(exists=True, dir_okay=False))
+@click.option("--verify", is_flag=True, help="Check each proxy's exit IP (sends a request per proxy).")
+def proxy_check(file: str, verify: bool) -> None:
+    """
+    Validate a proxy list file and show the parsed pool
+
+    \b
+    Examples:
+      camoufox proxy check proxies.txt
+      camoufox proxy check proxies.txt --verify
+    """
+    from .proxy import parse_proxy_file
+
+    try:
+        endpoints = parse_proxy_file(file)
+    except Exception as e:
+        rprint(f"Invalid proxy file: {e}", fg="red")
+        return
+
+    rprint(f"{len(endpoints)} usable prox{'y' if len(endpoints) == 1 else 'ies'} in {file}", fg="green")
+    for endpoint in endpoints:
+        line = f"  {endpoint.redacted()}"
+        if verify:
+            from .ip import public_ip
+
+            try:
+                ip = public_ip(endpoint.as_url())
+            except Exception:
+                ip = None
+            if ip:
+                line += f"  exit={ip}"
+            else:
+                line += "  "
+                rprint(line + "unreachable", fg="yellow")
+                continue
+        click.echo(line)
+
+
+@proxy_group.command(name="status")
+@click.option("--file", "file_", type=click.Path(exists=True, dir_okay=False), default=None, help="Proxy list file.")
+@click.option("--gateway", default=None, help="Gateway endpoint URL.")
+@click.option("--policy", default="round_robin", help="Rotation policy for file mode.")
+def proxy_status(file_: Optional[str], gateway: Optional[str], policy: str) -> None:
+    """
+    Show pool health: uses, failures, cooldowns, and the last exit IP seen
+
+    \b
+    Examples:
+      camoufox proxy status --file proxies.txt
+      camoufox proxy status --gateway "http://user-session-{session}:pass@gateway:8000"
+    """
+    from .proxy import ProxyRotationConfig, ProxyRotator
+
+    if not file_ and not gateway:
+        rprint("Pass --file for a proxy list, or --gateway for a rotating gateway.", fg="red")
+        return
+
+    try:
+        config = (
+            ProxyRotationConfig(mode="file", file=file_, policy=policy)
+            if file_
+            else ProxyRotationConfig(mode="gateway", gateway=gateway)
+        )
+        stats = ProxyRotator(config).stats()
+    except Exception as e:
+        rprint(f"Could not read pool: {e}", fg="red")
+        return
+
+    click.echo(f"mode     {stats['mode']} ({stats['policy']})")
+    click.echo(f"size     {stats['size']}")
+    click.echo(f"verify   {'yes' if stats['verify_ip'] else 'no'}")
+    click.echo(f"state    {stats['state_file']}")
+    click.echo()
+    for entry in stats["endpoints"]:
+        flag = ""
+        if entry["blacklisted"]:
+            flag = " [blacklisted]"
+        elif entry["cooling_down"]:
+            flag = f" [cooling {int(entry['cooldown_remaining'])}s]"
+        click.echo(f"  {entry['proxy']}{flag}")
+        click.echo(
+            f"    uses={entry['uses']} ok={entry['successes']} fail={entry['failures']} "
+            f"streak={entry['consecutive_failures']} last_ip={entry['last_ip'] or '-'}"
+        )
+
+
+@proxy_group.command(name="reset")
+@click.option("--file", "file_", type=click.Path(exists=True, dir_okay=False), default=None, help="Proxy list file.")
+@click.option("--gateway", default=None, help="Gateway endpoint URL.")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation.")
+def proxy_reset(file_: Optional[str], gateway: Optional[str], yes: bool) -> None:
+    """
+    Clear stored rotation state (cursor, failure counts, cooldowns)
+    """
+    from .proxy import ProxyRotationConfig, ProxyRotator
+
+    if not file_ and not gateway:
+        rprint("Pass --file for a proxy list, or --gateway for a rotating gateway.", fg="red")
+        return
+
+    try:
+        config = (
+            ProxyRotationConfig(mode="file", file=file_) if file_ else ProxyRotationConfig(mode="gateway", gateway=gateway)
+        )
+    except Exception as e:
+        rprint(f"Could not read pool: {e}", fg="red")
+        return
+
+    state_file = config.state_path
+    if state_file.exists():
+        if not yes and not click.confirm(f"Clear rotation state for this pool ({state_file})?"):
+            return
+        state_file.unlink()
+        rprint("Rotation state cleared.", fg="green")
+    else:
+        rprint("No rotation state to clear.")
+
+
 if __name__ == "__main__":
     cli()

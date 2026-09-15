@@ -25,6 +25,7 @@ from .fingerprints import from_browserforge, from_preset, generate_fingerprint, 
 from .geolocation import geoip_allowed, get_geolocation
 from .ip import Proxy, public_ip, valid_ipv4, valid_ipv6
 from .locales import handle_locales
+from .proxy import ProxyRotator, ProxySession, build_rotator
 import warnings
 
 from .pkgman import (
@@ -627,6 +628,8 @@ def launch_options(
     browser: Optional[str] = None,
     firefox_user_prefs: Optional[Dict[str, Any]] = None,
     proxy: Optional[Dict[str, str]] = None,
+    proxy_rotator: Optional[Any] = None,
+    proxy_session: Optional[ProxySession] = None,
     enable_cache: Optional[bool] = None,
     args: Optional[List[str]] = None,
     env: Optional[Dict[str, Union[str, float, bool]]] = None,
@@ -714,6 +717,15 @@ def launch_options(
         proxy (Optional[Dict[str, str]]):
             Proxy to use for the browser.
             Note: If geoip is True, a request will be sent through this proxy to find the target IP.
+        proxy_rotator (Optional[Any]):
+            Rotate the browser's exit IP per launch. Accepts a `ProxyRotationConfig`,
+            a dict of its fields, or a `ProxyRotator`. See `camoufox.proxy`.
+            Use this for a new IP per *browser*; use the `proxy` argument on
+            `NewContext`/`AsyncNewContext` for a new IP per *context*.
+        proxy_session (Optional[ProxySession]):
+            A session already acquired from a rotator, as an alternative to
+            passing `proxy_rotator` directly. Lets the caller launch the browser
+            itself (so the rotator can be told whether the launch succeeded).
         enable_cache (Optional[bool]):
             Cache previous pages, requests, etc (uses more memory).
         args (Optional[List[str]]):
@@ -777,6 +789,29 @@ def launch_options(
     # Warn the user for manual config settings
     if not i_know_what_im_doing:
         warn_manual_config(config)
+
+    # Resolve the session's proxy before anything downstream consults it. The
+    # geoip, WebRTC and anonymity checks below all read `proxy`, so rotating in
+    # one place here is what keeps the fingerprint describing the actual exit IP
+    # instead of the host's.
+    #
+    # The browser-launching wrappers acquire the session themselves (so they can
+    # report the launch outcome back to the pool); `proxy_rotator` is honoured
+    # here as well so that a direct `launch_options()` caller rotates too. The
+    # returned mapping is passed straight to Playwright, so nothing extra is
+    # stashed in it.
+    if proxy_session is None and proxy_rotator is not None:
+        _rotator = build_rotator(proxy_rotator)
+        assert _rotator is not None  # build_rotator only returns None for None
+        proxy_session = _rotator.acquire_session()
+
+    if proxy_session is not None:
+        proxy = proxy_session.playwright
+        if proxy_session.exit_ip and geoip is True:
+            # An explicit exit IP beats re-deriving it: the session already
+            # verified it, and a second lookup could race the gateway into a
+            # different exit than the one this browser will use.
+            geoip = proxy_session.exit_ip
 
     # Snapshot which domains the USER set before fingerprint generation fills in
     # the rest. The post-generation BrowserForge-correction fixes below must

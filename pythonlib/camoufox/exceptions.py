@@ -102,6 +102,34 @@ class InvalidProxy(Exception):
     ...
 
 
+class ProxyRotationError(Exception):
+    """
+    Base class for proxy rotation failures.
+    """
+
+    ...
+
+
+class InvalidProxyRotationConfig(ProxyRotationError, ValueError):
+    """
+    Raised when a proxy rotation configuration is malformed or contradictory.
+    """
+
+    ...
+
+
+class ProxyPoolExhausted(ProxyRotationError):
+    """
+    Raised when no proxy in a rotation pool could be used for a session.
+
+    This is deliberately fatal rather than falling back to a direct connection:
+    launching with a spoofed location from the host's real IP is a detection
+    vector. Pass `allow_direct_fallback=True` to opt into the fallback.
+    """
+
+    ...
+
+
 class UnknownIPLocation(LocaleError):
     """
     Raised when the location of an IP is unknown.

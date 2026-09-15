@@ -395,6 +395,84 @@ async with AsyncCamoufox() as browser:
 
 [[Installation & usage](https://camoufox.com/python/)]
 
+### Proxy rotation
+
+Camoufox can assign a fresh exit IP per session, from either a rotating gateway
+or a text file of proxies. The starting point is the choice of where to rotate:
+
+- **Per browser** — pass `proxy_rotator` to `Camoufox`/`AsyncCamoufox`. The proxy
+  is fixed for the browser's lifetime; every context inside it shares it.
+- **Per visit** — pass `proxy_rotator` to `NewContext`/`AsyncNewContext`. Reuse
+  one browser and open a context per visit; the fingerprint is regenerated there
+  too. A browser launch costs ~1-2s, so this is usually what you want.
+
+**Rotating gateway** — one endpoint that rotates server-side. A `{session}`
+placeholder in the URL is replaced with a fresh token per session:
+
+```python
+from camoufox.async_api import AsyncCamoufox, AsyncNewContext
+
+GATEWAY = {
+    "mode": "gateway",
+    "gateway": "http://user-session-{session}:password@gateway.example.com:8000",
+}
+
+async with AsyncCamoufox(geoip=True) as browser:
+    for _ in range(3):
+        context = await AsyncNewContext(browser, proxy_rotator=GATEWAY, os="windows")
+        page = await context.new_page()
+        await page.goto("https://httpbin.org/ip")
+        print(await page.text_content("body"))
+        await context.close()
+```
+
+**Proxy list file** — one proxy per line, one selected per session:
+
+```python
+POOL = {
+    "mode": "file",
+    "file": "proxies.txt",
+    "policy": "round_robin",   # or "least_used", or "random"
+    "verify_ip": True,         # ask each proxy for its exit IP; reject repeats
+}
+
+async with AsyncCamoufox(geoip=True) as browser:
+    context = await AsyncNewContext(browser, proxy_rotator=POOL)
+```
+
+Accepted line formats include `host:port`, `user:pass@host:port`,
+`host:port:user:pass`, `scheme://host:port`, and bracketed IPv6. Blank lines and
+`#` comments are skipped.
+
+What the rotator does for you:
+
+- **Round-robin without repeats** — every proxy is used before any repeats.
+- **Persistent cursor** — the position is stored per pool, so a restart resumes
+  instead of replaying the head of the list.
+- **Exit IP verification** — a repeated exit IP is rejected and the next
+  candidate is tried. A gateway under load returns sticky IPs, and two pool
+  entries can exit from the same address; without this, "a new IP per session"
+  would be quietly false.
+- **Cooldowns** — a proxy that keeps failing is benched, then retried. If the
+  whole pool is cooling down, the least-bad candidates are recycled rather than
+  stalling the run.
+- **No silent direct fallback** — if no proxy is usable, Camoufox raises. Running
+  on your own IP while the fingerprint claims to be elsewhere is a detection
+  vector. Pass `allow_direct_fallback=True` to permit it.
+- **Verified IP reuse** — when a session's exit IP is known, `geoip=True` uses it
+  instead of probing again, so a rotating gateway cannot race you onto a
+  different exit than the one being fingerprinted for.
+
+Manage pools from the command line:
+
+```bash
+camoufox proxy check proxies.txt --verify   # validate the file, optionally test each proxy
+camoufox proxy status --file proxies.txt    # uses, failures, cooldowns, last exit IP
+camoufox proxy reset  --file proxies.txt    # clear stored cursor and health
+```
+
+See `scripts/examples/proxy_rotation.py` for a runnable example.
+
 ---
 
 ## Capabilities
@@ -465,6 +543,7 @@ Below is a list of patches and features implemented in Camoufox.
 - WebGL fingerprint injection & rotation
 - Uses the correct system fonts and subpixel antialiasing & hinting based on your target OS
 - Avoid proxy detection by calculating your target geolocation, timezone, & locale from your proxy's target region
+- Rotate exit IPs per browser or per context, from a rotating gateway or a proxy list file, with repeat detection and failure cooldowns
 - Calculate and spoof the browser's language based on the distribution of language speakers in the proxy's target region
 - Remote server hosting to use Camoufox with other languages that support Playwright
 - Built-in virtual display buffer to run Camoufox headfully on a headless server

@@ -14,6 +14,7 @@ from typing_extensions import Literal
 from camoufox.virtdisplay import VirtualDisplay
 
 from .fingerprints import generate_context_fingerprint
+from .proxy import ProxyRotator, ProxySession, build_rotator
 from .utils import (
     attach_no_viewport_default,
     launch_options,
@@ -106,8 +107,27 @@ def NewBrowser(
     else:
         virtual_display = None
 
+    # Acquire the rotating proxy up front rather than inside launch_options, so a
+    # launch that fails on this proxy can be reported back to the pool. Proxy
+    # health is only knowable here: the rotator can see that a proxy answers, but
+    # not that the browser came up on it.
+    rotator: Optional[ProxyRotator] = None
+    session: Optional[ProxySession] = None
+    if from_options is None:
+        rotator = build_rotator(kwargs.pop('proxy_rotator', None))
+        session = kwargs.pop('proxy_session', None)
+        if rotator is not None and session is None:
+            session = rotator.acquire_session()
+
+    def _launch():
+        if persistent_context:
+            return playwright.firefox.launch_persistent_context(**from_options)
+        return playwright.firefox.launch(**from_options)
+
     if not from_options:
-        from_options = launch_options(headless=headless, debug=debug, **kwargs)
+        from_options = launch_options(
+            headless=headless, debug=debug, proxy_session=session, **kwargs
+        )
 
     # Playwright's default viewport deadlocks Juggler when the window is spoofed
     # to a different size (daijro/camoufox#666), so default to no_viewport.
@@ -117,11 +137,26 @@ def NewBrowser(
     if persistent_context:
         if no_viewport_default and not ('viewport' in from_options or 'no_viewport' in from_options):
             from_options = {**from_options, 'no_viewport': True}
-        context = playwright.firefox.launch_persistent_context(**from_options)
+        try:
+            context = _launch()
+        except BaseException as exc:
+            if rotator is not None and session is not None:
+                rotator.report_failure(session, reason=type(exc).__name__)
+            raise
+        if rotator is not None and session is not None:
+            rotator.report_success(session)
         return sync_attach_vd(context, virtual_display)
 
     # Browser
-    browser = playwright.firefox.launch(**from_options)
+    try:
+        browser = _launch()
+    except BaseException as exc:
+        if rotator is not None and session is not None:
+            rotator.report_failure(session, reason=type(exc).__name__)
+        raise
+    if rotator is not None and session is not None:
+        rotator.report_success(session)
+
     if no_viewport_default:
         attach_no_viewport_default(browser)
     return sync_attach_vd(browser, virtual_display)
@@ -158,6 +193,7 @@ def NewContext(
     ff_version: Optional[str] = None,
     webrtc_ip: Optional[str] = None,
     proxy: Optional[Dict[str, str]] = None,
+    proxy_rotator: Optional[Any] = None,
     geolocation: Optional[Dict[str, float]] = None,
     **context_kwargs: Any,
 ) -> BrowserContext:
@@ -168,6 +204,10 @@ def NewContext(
     with unique seeds for audio, canvas, and font spacing noise. All values are applied
     via addInitScript so they self-destruct before page scripts can detect them.
 
+    This is the per-visit rotation point. A browser's launch proxy is fixed for
+    the browser's lifetime and shared by every context, so for one IP per visit
+    pass `proxy_rotator` here and create a context per session.
+
     Parameters:
         browser: A Browser instance from NewBrowser or Camoufox.
         preset: A specific fingerprint preset dict to use. If None, picks randomly.
@@ -175,16 +215,42 @@ def NewContext(
         ff_version: Firefox version string for UA patching.
         webrtc_ip: IPv4 address to spoof for WebRTC ICE candidates.
         proxy: Per-context proxy (Playwright format: {"server": "...", "username": "...", "password": "..."}).
+        proxy_rotator: Rotates the exit IP per context. Unlike `proxy`, which is
+            a fixed proxy, this acquires a fresh one for every context. See
+            `camoufox.proxy`.
         geolocation: Per-context geolocation ({"latitude": float, "longitude": float}).
         **context_kwargs: Additional Playwright new_context() options.
     """
-    # Auto-derive WebRTC IP and timezone from proxy's exit IP when not explicitly provided
-    if proxy and (not webrtc_ip or "timezone_id" not in context_kwargs):
-        geo = _resolve_proxy_geo(proxy)
+    # Reject a fixed proxy and a rotator together: they contradict each other, and
+    # silently preferring one would make the other look broken.
+    if proxy_rotator is not None and proxy is not None:
+        raise ValueError(
+            "NewContext received both 'proxy' and 'proxy_rotator'. Pass one or the "
+            "other: 'proxy' is a single fixed proxy, 'proxy_rotator' rotates."
+        )
+    session: Optional[ProxySession] = None
+    if proxy_rotator is not None:
+        rotator = build_rotator(proxy_rotator)
+        assert rotator is not None
+        session = rotator.acquire_session()  # None only under allow_direct_fallback
+        if session is not None:
+            proxy = session.playwright
+
+    # Auto-derive WebRTC IP and timezone from the proxy's exit IP when not
+    # explicitly provided.
+    if proxy:
+        # A verified session already learned the exit IP; prefer it over a fresh
+        # lookup, which could race the rotating gateway onto a different exit
+        # than the one this context will actually use. The lookup still runs if
+        # the timezone is unknown, since that cannot be inferred from the IP.
+        exit_ip = session.exit_ip if session is not None else None
+        if not exit_ip or "timezone_id" not in context_kwargs:
+            geo = _resolve_proxy_geo(proxy)
+            exit_ip = exit_ip or geo["ip"]
+            if "timezone_id" not in context_kwargs and geo["timezone"]:
+                context_kwargs["timezone_id"] = geo["timezone"]
         if not webrtc_ip:
-            webrtc_ip = geo["ip"]
-        if "timezone_id" not in context_kwargs and geo["timezone"]:
-            context_kwargs["timezone_id"] = geo["timezone"]
+            webrtc_ip = exit_ip
 
     fp = generate_context_fingerprint(preset=preset, os=os, ff_version=ff_version, webrtc_ip=webrtc_ip)
 
