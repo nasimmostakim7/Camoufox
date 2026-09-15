@@ -498,6 +498,46 @@ def test_geoip_is_kept_when_the_extra_is_installed(waf_server, monkeypatch):
     assert runner._launch_options(level_by_id(3))["geoip"] is True
 
 
+def test_rotation_rung_without_a_pool_says_so(waf_server):
+    """
+    A proxy rung with no pool must not report itself as IP rotation.
+
+    L4 and up are defined by "a fresh exit IP per visitor". With no rotator the
+    visit goes out on this host's own address, so a report that still called the
+    rung "Proxy rotation" would point the operator at a control that was never
+    exercised. The run proceeds (some masking still happens) but announces the
+    gap.
+    """
+    events = []
+    runner = AuditRunner(
+        _config(waf_server, levels=[4], visitor_count=1),
+        on_progress=events.append,
+    )
+    report = asyncio.run(runner.run())
+
+    assert report.levels[0].level.id == 4
+    notices = [e for e in events if e.get("event") == "notice"]
+    assert any("without a proxy" in n.get("message", "") for n in notices), notices
+
+
+def test_no_missing_proxy_notice_when_a_pool_is_configured(waf_server, tmp_path):
+    """The notice is conditional, so a configured pool must not trigger it."""
+    pool = tmp_path / "proxies.txt"
+    pool.write_text("http://127.0.0.1:1\n", encoding="utf-8")
+    events = []
+    config = _config(
+        waf_server,
+        levels=[4],
+        visitor_count=1,
+        proxy={"mode": "file", "file": str(pool)},
+    )
+    runner = AuditRunner(config, on_progress=events.append)
+
+    assert runner._rotator is not None
+    notices = [e for e in events if e.get("event") == "notice"]
+    assert not any("without a proxy" in n.get("message", "") for n in notices), notices
+
+
 # --------------------------------------------------------------------------
 # Reporting
 # --------------------------------------------------------------------------

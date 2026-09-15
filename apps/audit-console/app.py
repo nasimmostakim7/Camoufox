@@ -30,10 +30,12 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import List
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from console import demo_waf  # noqa: E402
+from console.proxies import ROTATION_LEVEL_IDS, ProxyPoolStore  # noqa: E402
 from console.runs import AuditService  # noqa: E402
 from console.server import serve  # noqa: E402
 
@@ -66,6 +68,29 @@ def _parse_args(argv=None) -> argparse.Namespace:
         "--max-level", type=int, default=2, help="highest rung to climb (default: 2)"
     )
     parser.add_argument("--seed", type=int, default=7, help="schedule seed (default: 7)")
+    parser.add_argument(
+        "--proxy",
+        action="append",
+        default=[],
+        metavar="URL",
+        help=(
+            "a proxy for the L4+ rotation rungs, repeatable. Without at least one, "
+            "those rungs are left out rather than run on this host's own IP."
+        ),
+    )
+    parser.add_argument(
+        "--proxy-file",
+        default="",
+        help="a file with one proxy per line, for the L4+ rotation rungs",
+    )
+    parser.add_argument(
+        "--proxy-gateway",
+        default="",
+        help=(
+            "one rotating endpoint for L4+. Include the {session} token if the "
+            "gateway supports per-session rotation."
+        ),
+    )
     parser.add_argument(
         "--export",
         default="",
@@ -139,23 +164,76 @@ def _self_test() -> int:
         waf.stop()
 
 
+def _read_pool_entries(args) -> List[str]:
+    """The proxy strings named on the command line, comments and blanks removed."""
+    entries = list(args.proxy)
+    if args.proxy_file:
+        text = Path(args.proxy_file).expanduser().read_text(encoding="utf-8", errors="replace")
+        entries.extend(
+            line.split("#", 1)[0].strip()
+            for line in text.splitlines()
+            if line.split("#", 1)[0].strip()
+        )
+    return entries
+
+
+def _configure_pool(store, args) -> None:
+    """
+    Fill a store from the CLI, or leave it empty.
+
+    Goes through the store rather than building a spec by hand so that a pool set
+    at launch and one set from the UI are the same object, with the same redaction
+    and the same 0600 temp file. Raises ValueError on bad input.
+    """
+    if args.proxy_gateway:
+        store.set_gateway(args.proxy_gateway)
+        return
+    entries = _read_pool_entries(args)
+    if entries:
+        store.set_list(entries)
+
+
+def _warn_if_rotation_skipped(args) -> None:
+    """Tell the operator up front when L4+ cannot run."""
+    if args.max_level >= min(ROTATION_LEVEL_IDS) and not (
+        args.proxy or args.proxy_file or args.proxy_gateway
+    ):
+        print(
+            "No proxy supplied: L4+ are defined by a rotating exit IP, so they "
+            "will be left out rather than run on this host's address.",
+            file=sys.stderr,
+        )
+
+
 def _export(target_url: str, args) -> int:
     """Run one audit without the server, write every format, and return an exit code."""
     from console._engine import AuditConfig, AuditRunner, TargetScope
     from console._engine.report import render_text, write_report
     from console.runs import CONSOLE_LIMITS
 
+    _warn_if_rotation_skipped(args)
+    store = ProxyPoolStore()
+    _configure_pool(store, args)
+    pool = store.get()
+    pool_spec = pool.spec if pool is not None else None
+    selected = [
+        i
+        for i in range(0, args.max_level + 1)
+        if pool_spec is not None or i not in ROTATION_LEVEL_IDS
+    ]
+
     scope = TargetScope.from_urls([target_url], acknowledged=True)
     config = AuditConfig(
         target_url=target_url,
         scope=scope,
-        levels=list(range(0, args.max_level + 1)),
+        levels=selected,
         visitor_count=args.visitors,
         duration_hours=args.hours,
         cooldown_between_levels_s=0.0,
         seed=args.seed,
         limits=CONSOLE_LIMITS,
         headless=True,
+        proxy=pool_spec,
     )
     problems = config.validate()
     if problems:
@@ -199,6 +277,17 @@ def main(argv=None) -> int:
     waf, target_url = demo_waf.start_demo_waf()
     host = target_url.split("//", 1)[1].split("/", 1)[0].split(":")[0]
     service = AuditService(allowed_hosts=[host], demo_target=target_url)
+
+    _warn_if_rotation_skipped(args)
+    try:
+        _configure_pool(service.proxies, args)
+        pool = service.proxies.get()
+        if pool is not None:
+            print(f"Proxy pool: {pool.summary()['count']} endpoint(s)")
+    except (OSError, ValueError) as exc:
+        print(f"proxy pool rejected: {exc}", file=sys.stderr)
+        waf.stop()
+        return 2
 
     print(f"Demo WAF listening on {target_url}")
     print(f"Audit console on http://{args.host}:{args.port}/")

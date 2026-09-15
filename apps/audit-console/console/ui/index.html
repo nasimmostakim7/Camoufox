@@ -54,7 +54,7 @@
     font-weight: 600;
   }
   label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 5px; }
-  input, select {
+  input, select, textarea {
     width: 100%;
     background: var(--panel-2);
     border: 1px solid var(--line);
@@ -64,7 +64,13 @@
     font: inherit;
     font-size: 14px;
   }
-  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  textarea { font-family: var(--mono); font-size: 12.5px; resize: vertical; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  .proxybox { margin-top: 14px; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .proxybox summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+  .proxybox[open] summary { margin-bottom: 4px; }
+  .hint.warn { color: var(--challenge); }
+  .hint.ok { color: var(--allow); }
   .row { display: flex; gap: 10px; }
   .row > div { flex: 1; }
   button {
@@ -180,6 +186,37 @@
 
       <label for="maxlevel">Highest rung to climb</label>
       <select id="maxlevel"></select>
+      <div class="hint" id="levelhint"></div>
+
+      <details class="proxybox" id="proxybox">
+        <summary>Proxy pool <span class="badge" id="proxystate">none</span></summary>
+        <div class="hint" style="margin-top:10px">
+          L4 and up are defined by a fresh exit IP per visitor. With no pool they are
+          left out rather than run on this host's address and reported as rotation.
+        </div>
+        <label for="proxymode">Mode</label>
+        <select id="proxymode">
+          <option value="list">List — one proxy per line</option>
+          <option value="gateway">Gateway — one rotating endpoint</option>
+        </select>
+        <div id="listmode">
+          <label for="proxyentries">Proxies</label>
+          <textarea id="proxyentries" rows="4" spellcheck="false"
+            placeholder="http://user:pass@host:8080&#10;socks5://host:1080"></textarea>
+        </div>
+        <div id="gatewaymode" hidden>
+          <label for="gateway">Gateway URL</label>
+          <input id="gateway" spellcheck="false"
+            placeholder="http://user:pass@gate.example.com:8000">
+          <div class="hint">Include the <span class="mono">{session}</span> token if the
+            gateway rotates per session.</div>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <div><button id="saveproxy" type="button" style="margin-top:0">Save pool</button></div>
+          <div><button id="clearproxy" type="button" class="ghost" style="margin-top:0">Clear</button></div>
+        </div>
+        <div class="hint mono" id="proxyinfo"></div>
+      </details>
 
       <div class="row">
         <div>

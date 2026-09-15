@@ -98,7 +98,6 @@ function renderRungs(levels) {
       `${level.detected} detected · bypass ${Math.round((level.bypass_rate || 0) * 100)}%`;
     head.append(name, meta);
     wrap.append(head);
-
     const desc = document.createElement("div");
     desc.className = "rung-desc";
     desc.textContent = level.description || level.level_key;
@@ -149,7 +148,10 @@ function renderResult(session) {
   }
 
   el("stats").textContent =
-    `${summary.total_requests} requests · ${summary.total_visits} visits`;
+    `${summary.total_requests} requests · ${summary.total_visits} visits` +
+    (session.proxy && session.proxy.configured
+      ? ` · ${session.proxy.count} proxy endpoint(s)`
+      : " · no proxy");
   renderRungs(summary.levels || []);
 
   const exports = el("exports");
@@ -232,20 +234,118 @@ async function cancel() {
 async function boot() {
   el("start").addEventListener("click", start);
   el("cancel").addEventListener("click", cancel);
+  el("saveproxy").addEventListener("click", saveProxy);
+  el("clearproxy").addEventListener("click", clearProxy);
+  el("maxlevel").addEventListener("change", renderLevelHint);
+  el("proxymode").addEventListener("change", () => {
+    const list = el("proxymode").value === "list";
+    el("listmode").hidden = !list;
+    el("gatewaymode").hidden = list;
+  });
 
-  const [health, levels] = await Promise.all([
-    api("/api/health"),
-    api("/api/levels"),
-  ]);
+  const health = await api("/api/health");
   el("target").value = health.demo_target || "";
+  renderProxy(health.proxy || { configured: false });
+
+  await refreshLevels();
+  selectInitialLevel();
+}
+
+/* Which rungs can run depends on the browser being installed and on whether a
+   pool is configured, so the level list is re-read after the pool changes. */
+let LEVELS = [];
+
+async function refreshLevels() {
+  const body = await api("/api/levels");
+  LEVELS = body.levels || [];
   const select = el("maxlevel");
-  (levels.levels || []).forEach((lvl) => {
+  const previous = select.value;
+  select.innerHTML = "";
+  LEVELS.forEach((lvl) => {
     const opt = document.createElement("option");
     opt.value = lvl.id;
     opt.textContent = `${lvl.name} — ${lvl.key}`;
+    if (!lvl.reachable) opt.textContent += "  (unavailable)";
+    opt.disabled = !lvl.reachable;
     select.append(opt);
   });
-  select.value = "2";
+  if (previous) select.value = previous;
+  renderLevelHint();
+}
+
+function renderLevelHint() {
+  const chosen = Number(el("maxlevel").value);
+  const blocked = LEVELS.filter((l) => l.id <= chosen && !l.reachable);
+  const hint = el("levelhint");
+  if (!blocked.length) {
+    hint.textContent = "";
+    hint.className = "hint";
+    return;
+  }
+  const first = blocked[0];
+  hint.textContent = first.unreachable_reason || "unavailable on this host";
+  hint.className = "hint warn";
+}
+
+function selectInitialLevel() {
+  const select = el("maxlevel");
+  const reachable = LEVELS.filter((l) => l.reachable);
+  const preferred = reachable.find((l) => l.id === 2) || reachable[reachable.length - 1];
+  if (preferred) select.value = String(preferred.id);
+  renderLevelHint();
+}
+
+function renderProxy(state) {
+  el("proxystate").textContent = state.configured ? `${state.count} set` : "none";
+  const info = el("proxyinfo");
+  if (!state.configured) {
+    info.textContent = "No pool configured.";
+    info.className = "hint mono";
+    return;
+  }
+  info.textContent =
+    state.mode === "gateway"
+      ? `gateway ${state.gateway}`
+      : state.labels.join("\n");
+  info.className = "hint mono ok";
+}
+
+async function saveProxy() {
+  showError("");
+  const mode = el("proxymode").value;
+  const payload =
+    mode === "gateway"
+      ? { gateway: el("gateway").value.trim() }
+      : { entries: el("proxyentries").value.split("\n") };
+  try {
+    const state = await api("/api/proxy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    renderProxy(state);
+    await refreshLevels();
+    selectInitialLevel();
+    el("proxybox").open = false;
+  } catch (err) {
+    showError(err.message);
+  }
+}
+
+async function clearProxy() {
+  showError("");
+  try {
+    const state = await api("/api/proxy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clear: true }),
+    });
+    renderProxy(state);
+    await refreshLevels();
+    selectInitialLevel();
+  } catch (err) {
+    showError(err.message);
+  }
 }
 
 boot().catch((err) => showError(err.message));

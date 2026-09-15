@@ -112,6 +112,7 @@ class AuditRunner:
         self._consecutive_errors = 0
         self._virtual_display_used = False
         self._geoip_missing_noted = False
+        self._no_proxy_noted = False
         self._rotator = None
         if config.proxy:
             from camoufox.proxy import build_rotator
@@ -166,6 +167,20 @@ class AuditRunner:
                 "The geoip extra is not installed, so fingerprint spoofing runs "
                 "without IP-based geolocation and timezone alignment. Install it "
                 "with 'pip install camoufox[geoip]' for a stronger mask."
+            ),
+        )
+
+    def _note_no_proxy(self, level: EvasionLevel) -> None:
+        if self._no_proxy_noted:
+            return
+        self._no_proxy_noted = True
+        self._progress(
+            event="notice",
+            message=(
+                f"{level.name} ran without a proxy, so it measured the fingerprint "
+                "and header posture on this host's own exit IP -- not IP rotation. "
+                "Configure a proxy pool to make the IP-rotation result mean what the "
+                "rung says it means."
             ),
         )
 
@@ -628,10 +643,11 @@ class AuditRunner:
 
     async def _run_browser_visit(self, level, plan, url, proxy_session, index) -> VisitResult:
         options = self._launch_options(level)
-        if level.id >= 4 and proxy_session is not None:
-            # The proxy is applied per context below, so the browser itself
-            # launches direct; this keeps one browser serving many exits.
-            pass
+        if level.id >= 4 and proxy_session is None:
+            # This rung's whole claim is "a fresh exit IP per visitor". With no
+            # pool there is nothing to rotate, so say so rather than let a
+            # direct-IP result be read as an IP-rotation verdict.
+            self._note_no_proxy(level)
         launch_kwargs = {k: v for k, v in options.items() if k != "persistent_context"}
         if options.get("persistent_context"):
             # Persistent profiles are per-identity, so they cannot be shared

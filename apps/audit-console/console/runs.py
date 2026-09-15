@@ -32,6 +32,7 @@ from ._engine import (
     levels_up_to,
 )
 from ._engine.report import build_findings, render_text, write_report
+from .proxies import ROTATION_LEVEL_IDS, ProxyPoolStore
 
 #: Ceilings the console applies regardless of what the request asks for. The
 #: console is shared, so the brake cannot be something the caller sets.
@@ -44,7 +45,8 @@ CONSOLE_LIMITS = SafetyLimits(
 )
 
 MAX_VISITORS = 400
-MAX_LEVELS = 4
+#: L6 is the end of the engine's ladder; nothing above it exists to climb.
+MAX_LEVELS = 6
 
 
 def browser_available() -> bool:
@@ -77,6 +79,10 @@ class AuditSession:
     duration_hours: float
     max_level: int
     seed: Optional[int]
+    #: The rungs actually run, after a missing browser or pool pruned some.
+    levels: List[int] = field(default_factory=list)
+    #: Redacted description of the pool, or None. Never carries a password.
+    proxy_summary: Optional[Dict[str, Any]] = None
     status: str = "running"  # running | done | failed | cancelled
     error: str = ""
     started_at: float = field(default_factory=time.time)
@@ -108,6 +114,8 @@ class AuditSession:
                 "visitor_count": self.visitor_count,
                 "duration_hours": self.duration_hours,
                 "max_level": self.max_level,
+                "levels": self.levels,
+                "proxy": self.proxy_summary,
                 "started_at": self.started_at,
                 "finished_at": self.finished_at,
                 "event_count": len(self.events),
@@ -215,6 +223,7 @@ class AuditService:
     ) -> None:
         self.allowed_hosts = [h.lower() for h in (allowed_hosts or [])]
         self.demo_target = demo_target
+        self.proxies = ProxyPoolStore()
         self._sessions: Dict[str, AuditSession] = {}
         self._lock = threading.Lock()
         self._cap = 20
@@ -264,12 +273,32 @@ class AuditService:
         max_level = max(0, min(int(max_level), MAX_LEVELS))
         duration_hours = max(0.001, float(duration_hours))
 
+        notices: List[str] = []
+
         available = browser_available()
         if not available and max_level > 0:
             max_level = 0
-            capped = True
-        else:
-            capped = False
+            notices.append(
+                "No installed camoufox to drive the browser rungs, so the ladder is "
+                "capped at L0 (naive HTTP). Levels 1+ need the browser; see pythonlib/."
+            )
+
+        pool = self.proxies.get()
+        requested_levels = list(range(0, max_level + 1))
+        selected = [i for i in requested_levels if pool is not None or i not in ROTATION_LEVEL_IDS]
+        dropped = [i for i in requested_levels if i not in selected]
+        if dropped:
+            # L4+ are defined by a rotating exit IP. Running them with no pool
+            # would measure this host's own IP while the report still said
+            # "proxy rotation", which points the operator at the wrong control.
+            # Prune and say so, the same way a missing browser prunes L1+.
+            notices.append(
+                "Rungs "
+                + ", ".join(f"L{i}" for i in dropped)
+                + " are defined by a rotating exit IP, and no proxy pool is "
+                "configured, so they were left out rather than run directly and "
+                "reported as IP rotation. Add a pool to climb them."
+            )
 
         scope = TargetScope.from_urls(
             [target_url],
@@ -279,7 +308,7 @@ class AuditService:
         config = AuditConfig(
             target_url=target_url,
             scope=scope,
-            levels=list(range(0, max_level + 1)),
+            levels=selected,
             visitor_count=visitor_count,
             duration_hours=duration_hours,
             cooldown_between_levels_s=0.0,
@@ -287,6 +316,7 @@ class AuditService:
             limits=CONSOLE_LIMITS,
             extra_headers=dict(extra_headers or {}),
             headless=True,
+            proxy=pool.spec if pool is not None else None,
         )
         problems = config.validate()
         if problems:
@@ -297,7 +327,9 @@ class AuditService:
             target_url=target_url,
             visitor_count=visitor_count,
             duration_hours=duration_hours,
-            max_level=max_level,
+            max_level=max(requested_levels, default=0),
+            levels=selected,
+            proxy_summary=pool.summary() if pool is not None else None,
             seed=seed,
         )
         with self._lock:
@@ -308,17 +340,8 @@ class AuditService:
                 ]:
                     self._sessions.pop(stale, None)
         session.start(config)
-        if capped:
-            session._append(
-                {
-                    "event": "notice",
-                    "message": (
-                        "No installed camoufox to drive the browser rungs, so the "
-                        "ladder is capped at L0 (naive HTTP). Levels 1+ need the "
-                        "browser; see pythonlib/."
-                    ),
-                }
-            )
+        for message in notices:
+            session._append({"event": "notice", "message": message})
         return session
 
     def get(self, session_id: str) -> Optional[AuditSession]:
@@ -326,4 +349,65 @@ class AuditService:
             return self._sessions.get(session_id)
 
     def levels(self) -> List[Dict[str, Any]]:
-        return [level.to_dict() for level in levels_up_to(MAX_LEVELS)]
+        """
+        Every rung, annotated with whether this console can currently climb it.
+
+        The UI needs to distinguish "reachable now" from "needs a proxy pool", and
+        it must not be the UI's job to know which rungs are defined by the exit IP.
+        """
+        pool = self.proxies.get()
+        has_browser = browser_available()
+        out: List[Dict[str, Any]] = []
+        for level in levels_up_to(MAX_LEVELS):
+            entry = level.to_dict()
+            needs_pool = level.id in ROTATION_LEVEL_IDS
+            needs_browser = level.client == "browser"
+            runnable = (not needs_browser or has_browser) and (
+                not needs_pool or pool is not None
+            )
+            entry["reachable"] = runnable
+            entry["requires_pool"] = needs_pool
+            if needs_pool and pool is None:
+                entry["unreachable_reason"] = (
+                    "needs a proxy pool: this rung is defined by a rotating exit IP"
+                )
+            elif needs_browser and not has_browser:
+                entry["unreachable_reason"] = (
+                    "needs the browser: camoufox is not installed on this host"
+                )
+            out.append(entry)
+        return out
+
+    def proxy_state(self) -> Dict[str, Any]:
+        """The pool as the API may report it: never a password."""
+        pool = self.proxies.get()
+        if pool is None:
+            return {"configured": False, "mode": None, "count": 0, "labels": [], "gateway": ""}
+        return pool.summary()
+
+    def configure_proxy(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Set or clear the rotation pool.
+
+        Two accepted shapes, matching the engine's own: `entries` (a list of proxy
+        strings) or `gateway` (one rotating endpoint). Anything else is refused
+        rather than guessed at.
+        """
+        if body.get("clear"):
+            self.proxies.clear()
+            return self.proxy_state()
+        gateway = str(body.get("gateway") or "").strip()
+        entries = body.get("entries")
+        if gateway and entries:
+            raise ValueError("pass either 'gateway' or 'entries', not both")
+        if gateway:
+            pool = self.proxies.set_gateway(gateway)
+        elif entries:
+            if isinstance(entries, str):
+                entries = entries.splitlines()
+            if not isinstance(entries, list):
+                raise ValueError("'entries' must be a list of proxy strings")
+            pool = self.proxies.set_list([str(e) for e in entries])
+        else:
+            raise ValueError("provide 'entries' (a list of proxies) or 'gateway'")
+        return pool.summary()

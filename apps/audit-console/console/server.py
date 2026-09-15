@@ -124,6 +124,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 return self._serve_ui(name)
         if path == "/api/levels":
             return self._send(*_json_bytes({"levels": self.service.levels()}))
+        if path == "/api/proxy":
+            return self._send(*_json_bytes(self.service.proxy_state()))
         if path == "/api/health":
             return self._send(
                 *_json_bytes(
@@ -131,6 +133,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                         "ok": True,
                         "demo_target": self.service.demo_target,
                         "allowed_hosts": self.service.allowed_hosts,
+                        "proxy": self.service.proxy_state(),
                     }
                 )
             )
@@ -142,6 +145,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path.rstrip("/")
         if path == "/api/audits":
             return self._start_audit()
+        if path == "/api/proxy":
+            return self._set_proxy()
         if path.endswith("/cancel"):
             parts = path.split("/")
             # /api/audits/<id>/cancel
@@ -159,6 +164,18 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         if ctype.startswith("text/") or ctype == "application/javascript":
             ctype += "; charset=utf-8"
         self._send(200, body, ctype)
+
+    def _set_proxy(self) -> None:
+        try:
+            body = self._read_json()
+        except ValueError as exc:
+            return self._send(*_json_bytes({"error": str(exc)}, 400))
+        try:
+            state = self.service.configure_proxy(body)
+        except ValueError as exc:
+            return self._send(*_json_bytes({"error": str(exc)}, 400))
+        # The response is the redacted state, never the request that carried it.
+        return self._send(*_json_bytes(state))
 
     def _start_audit(self) -> None:
         try:
