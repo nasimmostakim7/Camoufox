@@ -110,6 +110,13 @@ git push origin v0.5.6-gui
 The three archives are attached to that tag's release automatically. The `release`
 job only runs for tags: an artifact from a manual run has no release to attach to.
 
+Prefer the manual run unless you actually want a release. The repository also has
+a **Build and Release** workflow that fires on `tags: ["*"]`, so pushing a tag
+starts a nine-job browser cross-compilation as well. That is why this workflow
+matches only `v*-gui` tags — an ordinary version tag such as `v152.0.4-beta.32`
+does not trigger a desktop build. The browser build still fires either way; it is
+the tagging, not this workflow, that starts it.
+
 Each archive is built on its own runner (`windows-latest`, `ubuntu-24.04`,
 `macos-14`) because of the no-cross-compilation rule above.
 

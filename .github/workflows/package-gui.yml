@@ -8,8 +8,14 @@ name: Build desktop app
 # target flag -- there is no flag.
 #
 # Trigger:
-#   * push a tag                    -> build all three and attach to the Release
 #   * workflow_dispatch             -> build, downloadable via "Artifacts"
+#   * push a "v*-gui" tag           -> build all three and attach to that Release
+#
+# Prefer workflow_dispatch. The repository already has a Build and Release
+# workflow that fires on `tags: ["*"]` and cross-compiles the browser for the
+# whole 9-job matrix, so pushing any tag starts that too. Tagging is worth it
+# only when the archives should be attached to a Release, and the prefix below
+# at least keeps this workflow off the version tags.
 #
 # The browser is deliberately not bundled. It is ~470 MB per platform, is fetched
 # at runtime by `camoufox fetch`, and its install path is recorded absolutely, so
@@ -26,7 +32,7 @@ on:
       - ".github/workflows/package-gui.yml"
   push:
     tags:
-      - "*"
+      - "v*-gui"
 
 permissions:
   contents: read
