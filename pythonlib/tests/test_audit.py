@@ -25,6 +25,7 @@ from camoufox.audit import (  # noqa: E402
     AuditConfig,
     AuditRunner,
     AuthorizationRequired,
+    CAPABILITIES,
     EVASION_LEVELS,
     SafetyLimits,
     ScopeViolation,
@@ -32,6 +33,7 @@ from camoufox.audit import (  # noqa: E402
     Verdict,
     build_schedule,
     classify_response,
+    ladder_problems,
     level_by_id,
 )
 from camoufox.audit.report import build_findings, render_html, render_text  # noqa: E402
@@ -590,3 +592,213 @@ def test_html_escapes_target_url(waf_server, tmp_path):
     html = render_html(report)
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;" in html
+
+
+# --------------------------------------------------------------------------
+# The ladder must isolate exactly one capability per rung
+# --------------------------------------------------------------------------
+
+
+def test_ladder_adds_exactly_one_capability_per_rung():
+    """Each rung's whole claim is that it differs from the one below by one axis.
+
+    A rung that repeats the rung below it (L3/L4/L5 used to be byte-identical,
+    with no launch-option difference at all) or that turns on two axes at once
+    makes a verdict unattributable, which is the one thing the ladder exists to
+    prevent.
+    """
+    assert ladder_problems() == []
+
+
+def test_each_capability_is_introduced_exactly_once():
+    seen = [level.adds for level in EVASION_LEVELS if level.adds is not None]
+    assert len(seen) == len(set(seen)), f"a capability is introduced twice: {seen}"
+    assert set(seen) <= set(CAPABILITIES)
+
+
+def test_rungs_that_claim_behavior_are_the_only_ones_flagged():
+    behavioral = [level.id for level in EVASION_LEVELS if level.is_behavioral]
+    assert behavioral == [5, 6], (
+        "only L5 and up may act like a human; lower rungs that scroll, type or "
+        "carry a referer would credit behavior for a static-signal verdict"
+    )
+
+
+def test_rotation_is_claimed_only_by_the_rungs_that_rotate():
+    rotating = [level.id for level in EVASION_LEVELS if level.requires_rotation]
+    assert rotating == [4, 5, 6]
+
+
+def test_the_rungs_below_behavior_do_not_carry_humanize():
+    """humanize is Camoufox's cursor humanization: a behavioral capability."""
+    for level in EVASION_LEVELS:
+        if not level.is_behavioral:
+            assert not (level.camoufox_options or {}).get("humanize"), (
+                f"{level.name} enables humanize but does not claim behavior"
+            )
+
+
+def test_plan_visit_without_behavior_is_a_single_direct_request():
+    """A non-behavioral rung must send one direct request, nothing more."""
+    from camoufox.audit.journey import ArrivalSource, JourneyConfig, plan_visit
+
+    plan = plan_visit(JourneyConfig(), random.Random(7), behavior=False)
+    assert plan.source == ArrivalSource.DIRECT
+    assert plan.referer is None
+    assert plan.page_count == 1
+    assert plan.scroll_steps == 0
+    assert plan.will_type is False
+    assert plan.follow_links is False
+
+
+def test_plan_visit_with_behavior_still_produces_varied_journeys():
+    """The gate must not flatten the behavioral rung's own session shape."""
+    from camoufox.audit.journey import JourneyConfig, plan_visit
+
+    rng = random.Random(3)
+    plans = [plan_visit(JourneyConfig(), rng, behavior=True) for _ in range(40)]
+    assert any(p.page_count > 1 for p in plans)
+    assert any(p.will_type for p in plans)
+
+
+# --------------------------------------------------------------------------
+# Proxy acquisition is gated on the rung that is defined by rotation
+# --------------------------------------------------------------------------
+
+
+def _pool_file(tmp_path):
+    pool = tmp_path / "proxies.txt"
+    pool.write_text("http://127.0.0.1:1\n", encoding="utf-8")
+    return pool
+
+
+def test_a_rung_below_rotation_never_acquires_a_proxy(waf_server, tmp_path):
+    """L3 is not defined by the exit IP, so it must go out on this host's address.
+
+    Acquiring a session for it would make L3's verdict a product of an IP the rung
+    never claimed to use, and would spend pool capacity before L4 ever runs.
+    """
+    runner = AuditRunner(
+        _config(
+            waf_server,
+            levels=[3],
+            visitor_count=2,
+            proxy={"mode": "file", "file": str(_pool_file(tmp_path))},
+        )
+    )
+
+    def refuse():
+        raise AssertionError("L3 must not acquire a proxy")
+
+    runner._acquire_proxy = refuse
+    report = asyncio.run(runner.run())
+    assert report.levels[0].level.id == 3
+
+
+def test_rotation_rung_still_acquires_a_proxy(waf_server, tmp_path):
+    runner = AuditRunner(
+        _config(
+            waf_server,
+            levels=[4],
+            visitor_count=1,
+            proxy={"mode": "file", "file": str(_pool_file(tmp_path))},
+        )
+    )
+    acquired = []
+    original = runner._acquire_proxy
+
+    def spy():
+        acquired.append(True)
+        return original()
+
+    runner._acquire_proxy = spy
+    asyncio.run(runner.run())
+    assert acquired, "a rotation rung must acquire a proxy session"
+
+
+def test_proxy_accounting_is_untouched_on_rungs_that_use_no_proxy(waf_server, tmp_path):
+    """The per-proxy counter must stay empty for rungs that never take a proxy."""
+    runner = AuditRunner(
+        _config(
+            waf_server,
+            levels=[0],
+            visitor_count=3,
+            proxy={"mode": "file", "file": str(_pool_file(tmp_path))},
+        )
+    )
+    asyncio.run(runner.run())
+    assert runner._proxy_counts == {}
+
+
+# --------------------------------------------------------------------------
+# The headless setting is an override, not a silent flattening of the ladder
+# --------------------------------------------------------------------------
+
+
+def test_default_config_leaves_each_rung_its_own_posture(waf_server, monkeypatch):
+    """With no override, L1 launches headless and L2 launches headed.
+
+    On a host with a real display the headed rung is `False`; with none it is
+    `'virtual'`, Camoufox's own Xvfb. Either way it is *not* headless, which is
+    the distinction the ladder depends on.
+    """
+    monkeypatch.setattr(AuditRunner, "_has_display", staticmethod(lambda: True))
+    runner = AuditRunner(_config(waf_server, levels=[1, 2], visitor_count=1))
+    assert runner._launch_options(level_by_id(1))["headless"] is True
+    assert runner._launch_options(level_by_id(2))["headless"] is False
+
+
+def test_headless_rung_falls_back_to_virtual_on_a_displayless_host(waf_server, monkeypatch):
+    monkeypatch.setattr(AuditRunner, "_has_display", staticmethod(lambda: False))
+    runner = AuditRunner(_config(waf_server, levels=[2], visitor_count=1))
+    assert runner._launch_options(level_by_id(2))["headless"] == "virtual"
+
+
+def test_headless_override_forces_every_rung_and_announces_it(waf_server, monkeypatch):
+    """Ticking the box must actually force headless, and say that it overrode L2."""
+    monkeypatch.setattr(AuditRunner, "_has_display", staticmethod(lambda: True))
+    events = []
+    runner = AuditRunner(
+        _config(waf_server, levels=[1, 2], visitor_count=1, headless=True),
+        on_progress=events.append,
+    )
+    assert runner._launch_options(level_by_id(1))["headless"] is True
+    assert runner._launch_options(level_by_id(2))["headless"] is True
+    notices = [e for e in events if e.get("event") == "notice"]
+    assert any("forced every rung headless" in n.get("message", "") for n in notices), notices
+
+
+def test_headful_override_is_honoured_too(waf_server, monkeypatch):
+    monkeypatch.setattr(AuditRunner, "_has_display", staticmethod(lambda: True))
+    runner = AuditRunner(_config(waf_server, levels=[1], visitor_count=1, headless=False))
+    assert runner._launch_options(level_by_id(1))["headless"] is False
+
+
+def test_no_override_notice_when_the_rung_agrees_with_the_setting(waf_server, monkeypatch):
+    """Forcing headless for L1 agrees with L1, so there is nothing to announce."""
+    monkeypatch.setattr(AuditRunner, "_has_display", staticmethod(lambda: True))
+    events = []
+    runner = AuditRunner(
+        _config(waf_server, levels=[1], visitor_count=1, headless=True),
+        on_progress=events.append,
+    )
+    runner._launch_options(level_by_id(1))
+    notices = [e for e in events if e.get("event") == "notice"]
+    assert not any("forced every rung" in n.get("message", "") for n in notices), notices
+
+
+# --------------------------------------------------------------------------
+# Honesty about the rungs whose named signal cannot be exercised
+# --------------------------------------------------------------------------
+
+
+def test_persistent_rung_says_the_profile_was_not_exercised(waf_server):
+    """L6 is named for a durable profile the reused-browser design cannot give it."""
+    events = []
+    runner = AuditRunner(
+        _config(waf_server, levels=[6], visitor_count=1),
+        on_progress=events.append,
+    )
+    asyncio.run(runner.run())
+    notices = [e for e in events if e.get("event") == "notice"]
+    assert any("durable profile" in n.get("message", "") for n in notices), notices
