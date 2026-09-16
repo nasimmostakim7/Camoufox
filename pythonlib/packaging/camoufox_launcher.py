@@ -13,6 +13,7 @@ build has no console for a traceback to land in.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import traceback
 from pathlib import Path
@@ -122,27 +123,30 @@ def _self_check() -> int:
         # The audit tab is the reason this fork exists, so assert its bridge
         # survived: a missing hiddenimport leaves the object defined but with no
         # callable slots, and the QML then binds to nothing.
-        required = (
-            "start",
-            "stop",
-            "setTarget",
-            "setProxyModeIndex",
-            "setProxyFile",
-            "setProxyGateway",
-            "validateProxyFile",
+        #
+        # The names come from the QML itself rather than a hand-kept list. A list
+        # only covers what someone remembered to add, and this check exists
+        # precisely for the binding nobody thought about.
+        referenced = sorted(
+            set(re.findall(r"auditBackend\.([A-Za-z_][A-Za-z0-9_]*)", qml.read_text(encoding="utf-8")))
         )
-        missing = [name for name in required if not hasattr(audit_backend, name)]
+        if not referenced:
+            _record("self-check FAILED: no auditBackend bindings found in the QML\n")
+            return 1
+
+        missing = [name for name in referenced if not hasattr(audit_backend, name)]
         if missing:
+            plural = "s" if len(missing) > 1 else ""
             _record(
-                "self-check FAILED: AuditBackend is missing slot(s): "
-                + ", ".join(missing)
-                + "\n"
+                "self-check FAILED: the QML binds auditBackend."
+                + ", auditBackend.".join(missing)
+                + f" but AuditBackend does not define it{plural}\n"
             )
             return 1
 
         _record(
             f"self-check OK: QML {qml.name}, {len(roots)} root object(s), "
-            f"audit bridge present\n"
+            f"{len(referenced)} audit bindings resolved\n"
         )
         del engine
         del app

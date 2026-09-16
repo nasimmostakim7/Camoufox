@@ -116,12 +116,23 @@ Each archive is built on its own runner (`windows-latest`, `ubuntu-24.04`,
 ### The self-check the pipeline runs
 
 `--self-check` loads the real `main.qml` under Qt's **offscreen** platform and
-asserts that a root object appears and the audit bridge is callable:
+asserts that a root object appears and that every `auditBackend.…` name the QML
+binds to exists on `AuditBackend`:
 
 ```bash
 ./dist/CamoufoxGUI/CamoufoxGUI --self-check
 cat dist/CamoufoxGUI/CamoufoxGUI-selfcheck.log
 ```
+
+A passing run reports how many bindings it resolved:
+
+```
+self-check OK: QML main.qml, 1 root object(s), 59 audit bindings resolved
+```
+
+The names are read out of the QML rather than kept in a list here, because a
+hand-maintained list only covers what someone remembered to add — and the failure
+this guards against is the binding nobody thought about.
 
 That is what catches a missing `datas` entry. Without it, a bad bundle presents as
 a window that never opens, with nothing in any log. The verdict goes to a file
@@ -131,6 +142,10 @@ The pipeline then checks the shipped files by name — `main.qml`, the icon,
 `browserforge.yml`, `language_tags`, the apify fingerprint archive, and
 Playwright's Node driver — so a failure names the file that went missing rather
 than just reporting a dead app.
+
+On Windows the log is written before the process exits, so the gate reads the log
+rather than the exit code. A GUI-subsystem executable is not waited for by
+PowerShell, which makes the exit code unreliable there.
 
 macOS is the exception: its runners have no window server and the PySide6 wheel
 has no offscreen plugin there, so that leg verifies the bundle by its data files
