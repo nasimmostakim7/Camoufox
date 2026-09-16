@@ -278,6 +278,16 @@ Print the install directory path.
 /home/name/.cache/camoufox
 ```
 
+With `--browser`, print the directory holding the active browser instead. That
+is where `camoufox-bin` and the resources the Python API resolves beside it
+(`properties.json`, `camoufox.cfg`, `fonts/`) live; since the versioned layout
+they sit in a per-version subdirectory of the install directory, not at its root.
+
+```bash
+> camoufox path --browser
+/home/name/.cache/camoufox/browsers/official/152.0.4-beta.30-5720d45b
+```
+
 <hr width=50>
 
 ### `test`

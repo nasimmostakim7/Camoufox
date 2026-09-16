@@ -615,8 +615,15 @@ jobs:
         run: |
           set -euo pipefail
           python -m camoufox fetch
-          install_dir="$(python -m camoufox path)"
-          echo "install dir: $install_dir"
+          # `camoufox path` is the install directory -- the cache root. The
+          # binary is not there and never was: since the versioned layout it
+          # lives in a per-version subdirectory, and this job used to copy the
+          # root and then fail on an artifact with no camoufox-bin in it. Pack
+          # `--browser`, which is the directory the Python API itself resolves
+          # the binary and its resources from, so the artifact is laid out the
+          # way prepare-browser unpacked the build job's one.
+          browser_dir="$(python -m camoufox path --browser)"
+          echo "browser dir: $browser_dir"
           # Which browser did we actually get? This path does not build, it
           # downloads the current release -- correct for a driver change, since
           # that is what users run. But the SUITE comes from upstream.sh, and in
@@ -628,18 +635,23 @@ jobs:
           echo "fetched: $active"
           python3 -m ci.versions --check-fetched "$active" \
             ${{ inputs.browser_version && format('--browser-version {0}', inputs.browser_version) || '' }}
-          test -x "$install_dir/camoufox-bin" || {
-            echo "::error::no camoufox-bin under $install_dir after fetch"; exit 1; }
-          # The published build is packaged, so properties.json and the font
-          # bundles are already beside the binary -- the two things the Python
-          # API resolves there. Assert rather than assume.
-          for required in properties.json fonts; do
-            [ -e "$install_dir/$required" ] || {
+          # The published build is packaged, so properties.json, camoufox.cfg and
+          # the font bundles are already beside the binary -- exactly what
+          # prepare-browser asserts on unpacking, and what the Python API resolves
+          # there. Hold the fetch path to the same list the build path uses, or a
+          # regression here fails in five browser jobs instead of one.
+          for required in camoufox-bin properties.json camoufox.cfg fonts/linux fontconfig/linux; do
+            [ -e "$browser_dir/$required" ] || {
               echo "::error::the published build has no $required beside the binary"; exit 1; }
           done
           mkdir -p pack/bin
-          cp -a "$install_dir/." pack/bin/
-          tar -C pack -cf - bin | zstd -3 -T0 -o camoufox-dist.tar.zst
+          cp -a "$browser_dir/." pack/bin/
+          test -f pack/bin/camoufox-bin || { echo "::error::fetch packed an artifact with no camoufox-bin"; exit 1; }
+          # -h for the same reason the build job uses it: the published release is
+          # packaged and has no symlinks today, but an unpackaged or differently
+          # packaged release would, and a link that resolves here and dangles on
+          # the runner that only downloads the artifact fails three jobs later.
+          tar -C pack -chf - bin | zstd -3 -T0 -o camoufox-dist.tar.zst
           ls -lh camoufox-dist.tar.zst
 
       - uses: actions/upload-artifact@v4

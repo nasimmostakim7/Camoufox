@@ -38,6 +38,7 @@ from camoufox.audit import (  # noqa: E402
 )
 from camoufox.audit.report import build_findings, render_html, render_text  # noqa: E402
 from camoufox.audit.schedule import ArrivalPattern, ScheduleConfig  # noqa: E402
+from camoufox.proxy import ProxyRotator  # noqa: E402
 
 
 # --------------------------------------------------------------------------
@@ -728,6 +729,78 @@ def test_proxy_accounting_is_untouched_on_rungs_that_use_no_proxy(waf_server, tm
     )
     asyncio.run(runner.run())
     assert runner._proxy_counts == {}
+
+
+def test_each_visitor_gets_its_own_proxy_session(waf_server, tmp_path):
+    """The product claim is "a fresh exit IP per visitor", so pin it per visit.
+
+    The rotator's own tests cover that `acquire_session()` advances; what they
+    cannot see is whether the *runner* asks it once per visitor or reuses one
+    session across a whole rung. A reused session would make L4's verdict the
+    product of a single exit, which is the one thing the rung claims not to do.
+    """
+    runner = AuditRunner(
+        _config(
+            waf_server,
+            levels=[4],
+            visitor_count=3,
+            proxy={"mode": "file", "file": str(_pool_file(tmp_path))},
+        )
+    )
+    seen = []
+    original = runner._acquire_proxy
+
+    def spy():
+        session, reason = original()
+        if session is not None:
+            seen.append(session.session_id)
+        return session, reason
+
+    runner._acquire_proxy = spy
+    asyncio.run(runner.run())
+
+    assert len(seen) >= 2, f"a rotation rung must take a session per visitor: {seen}"
+    assert len(seen) == len(set(seen)), f"a session was reused across visitors: {seen}"
+
+
+def test_a_gateway_session_token_is_substituted_per_visitor(
+    waf_server, tmp_path, monkeypatch
+):
+    """A gateway expresses stickiness through `{session}`, so each visit gets its own.
+
+    Without the substitution every visitor would share one token and therefore
+    one exit IP -- a rotation feature that silently rotates nothing.
+    """
+    # The gateway host is not real, so stub the reachability probe rather than
+    # let a DNS failure be read as "the token was not substituted".
+    monkeypatch.setattr(ProxyRotator, "_endpoint_reachable", lambda self, endpoint: True)
+    runner = AuditRunner(
+        _config(
+            waf_server,
+            levels=[4],
+            visitor_count=3,
+            proxy={
+                "mode": "gateway",
+                "gateway": "http://user-session-{session}:pw@gw.invalid:8000",
+                "verify_ip": False,
+            },
+        )
+    )
+    tokens = []
+    original = runner._acquire_proxy
+
+    def spy():
+        session, reason = original()
+        if session is not None:
+            tokens.append(session.endpoint.username)
+        return session, reason
+
+    runner._acquire_proxy = spy
+    asyncio.run(runner.run())
+
+    assert len(tokens) >= 2, f"expected a token per visitor, got {tokens}"
+    assert all("{session}" not in (t or "") for t in tokens), tokens
+    assert len(tokens) == len(set(tokens)), f"two visitors shared a gateway token: {tokens}"
 
 
 # --------------------------------------------------------------------------

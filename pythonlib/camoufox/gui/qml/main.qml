@@ -1594,6 +1594,15 @@ ApplicationWindow {
                                                     onTextChanged: auditBackend.setProxyFile(text)
                                                 }
                                                 Btn {
+                                                    text: "Browse"
+                                                    onClicked: {
+                                                        var r = auditBackend.browseProxyFile()
+                                                        if (r.path) proxyFileInput.text = r.path
+                                                        proxyStatus.text = r.message
+                                                        proxyStatus.color = r.ok ? c.ok : c.err
+                                                    }
+                                                }
+                                                Btn {
                                                     text: "Check"
                                                     onClicked: {
                                                         var r = auditBackend.validateProxyFile(proxyFileInput.text)
