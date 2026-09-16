@@ -27,9 +27,19 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
-#: Repository-relative root of the python library. The spec is run from the repo
-#: root, so this resolves without depending on the installed copy's location.
-LIB_ROOT = Path(SPECPATH).parent.parent
+#: SPECPATH is the directory holding this spec file, i.e. <repo>/pythonlib/packaging.
+#: The python library itself is one level up, NOT two: `parent.parent` resolves to
+#: the repository root, which has no `camoufox/` package. The icon path below is
+#: derived from this, and only Windows and macOS validate the icon -- on Linux
+#: PyInstaller ignores it, so a wrong value there fails silently.
+LIB_ROOT = Path(SPECPATH).parent
+
+#: Checked here rather than left to PyInstaller, which only validates the icon on
+#: Windows and macOS. Without this, a wrong path passes CI on Linux and then fails
+#: on the other two, which is exactly how this went unnoticed.
+ICON = LIB_ROOT / "camoufox" / "gui" / "assets" / "icon.ico"
+if not ICON.exists():
+    raise SystemExit(f"icon not found: {ICON} (LIB_ROOT={LIB_ROOT})")
 
 datas = []
 binaries = []
@@ -183,7 +193,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=str(LIB_ROOT / "camoufox" / "gui" / "assets" / "icon.ico"),
+    icon=str(ICON),
 )
 
 coll = COLLECT(
@@ -203,7 +213,7 @@ if sys.platform == "darwin":
     app = BUNDLE(
         coll,
         name="CamoufoxGUI.app",
-        icon=str(LIB_ROOT / "camoufox" / "gui" / "assets" / "icon.ico"),
+        icon=str(ICON),
         bundle_identifier="com.camoufox.manager",
         info_plist={
             "CFBundleName": "Camoufox Manager",
