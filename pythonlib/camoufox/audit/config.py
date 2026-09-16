@@ -99,7 +99,15 @@ class AuditConfig:
     artifact_dir: Optional[str] = None
     #: Keep the browser open between visitors (much cheaper) or relaunch per visit.
     reuse_browser: bool = True
-    headless: bool = True
+    #: Force the headed/headless posture for every browser rung.
+    #:
+    #: None (the default) honours each rung's own posture, which is what makes the
+    #: ladder mean anything -- L1 is defined by being headless and L2 by being
+    #: headful. True/False overrides the posture for a host that cannot provide a
+    #: display (or an operator who wants every rung run the same way); the runner
+    #: announces the override when it contradicts a rung, so a verdict is never
+    #: silently credited to a posture that was not actually used.
+    headless: Optional[bool] = None
 
     def selected_levels(self) -> List[EvasionLevel]:
         if self.levels:
