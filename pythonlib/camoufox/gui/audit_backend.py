@@ -209,7 +209,10 @@ class AuditBackend(QObject):
         self._max_concurrency = 4
         self._max_per_minute = 30
         self._max_per_proxy = 0
-        self._headless = True
+        #: Force headless for every browser rung. False (the default) honours each
+        #: rung's own posture, which is what lets L1 be headless and L2 headful;
+        #: ticking the box overrides them all, and the run announces the override.
+        self._force_headless = False
         self._seed = ""
 
         # --- proxy --------------------------------------------------------
@@ -425,11 +428,13 @@ class AuditBackend(QObject):
 
     @Property(bool, notify=changed)
     def headless(self):
-        return self._headless
+        return self._force_headless
 
     @Slot(bool)
     def setHeadless(self, value: bool) -> None:
-        self._headless = bool(value)
+        """Force every browser rung to run headless (True) or honour each rung's
+        declared posture (False, the default)."""
+        self._force_headless = bool(value)
         self.changed.emit()
 
     @Property(str, notify=changed)
@@ -653,7 +658,7 @@ class AuditBackend(QObject):
             ),
             proxy=proxy,
             seed=seed,
-            headless=self._headless,
+            headless=True if self._force_headless else None,
         )
 
         problems = config.validate()

@@ -162,14 +162,43 @@ def _lognormal(median: float, sigma: float, low: float, high: float, rng: random
     return float(min(max(value, low), high))
 
 
-def plan_visit(config: JourneyConfig, rng: random.Random) -> VisitPlan:
+def plan_visit(
+    config: JourneyConfig,
+    rng: random.Random,
+    *,
+    behavior: bool = True,
+) -> VisitPlan:
     """
     Decide what one visitor does, before touching the network.
 
     Planning first keeps the behavior coherent: the referer, the page count and
     the cadence are chosen together rather than drifting independently, which is
     what makes a session look scripted.
+
+    `behavior` gates the *human cadence* axes -- dwell, goto-scrolling, typing,
+    multi-page journeys and the arrival source. When False the visit is a single
+    direct request, which is what the rungs below the behavioral one have to send
+    to stay honest: a rung whose job is to test header consistency cannot also be
+    silently humanized, or its verdict would credit the wrong control. Camoufox's
+    own cursor humanization is a separate axis, enabled by the rung's launch
+    options.
     """
+    if not behavior:
+        # A single, direct, immediate request: no referer, no scroll, no typing,
+        # no follow-up pages. The shape is what distinguishes this from the
+        # behavioral rungs, not the dwell value.
+        return VisitPlan(
+            source=ArrivalSource.DIRECT,
+            referer=None,
+            dwell_s=0.0,
+            page_count=1,
+            scroll_steps=0,
+            will_type=False,
+            is_bounce=True,
+            follow_links=False,
+            inter_page_delay_s=[],
+        )
+
     sources = list(config.source_weights.keys())
     weights = list(config.source_weights.values())
     source = rng.choices(sources, weights=weights, k=1)[0]

@@ -126,8 +126,8 @@ Layout:
 |--------|------|
 | `scope.py` | `TargetScope` — the authorization gate. Every navigation goes through `check()`. |
 | `detection.py` | `classify_response()` → `Verdict`, with vendor attribution and evidence. |
-| `evasion.py` | `EVASION_LEVELS` — the ladder; each rung says what it isolates. |
-| `journey.py` | `plan_visit()` — human-like navigation (referers, dwell, sampling). |
+| `evasion.py` | `EVASION_LEVELS` — the ladder; each rung says what it isolates, and declares its cumulative `capabilities` + the one `adds`. |
+| `journey.py` | `plan_visit()` — human-like navigation (referers, dwell, sampling). Pass `behavior=False` for the rungs below L5. |
 | `schedule.py` | `build_schedule()` — non-uniform, jittered arrivals across a window. |
 | `runner.py` | `AuditRunner` — async execution, ceilings, progress events, cancellation. |
 | `report.py` | Findings, text/HTML/JSON/CSV export. |
@@ -219,6 +219,20 @@ Invariants worth not breaking:
   hosted console runs on a bare Python, so this is the normal state. Do not accept
   a deeper `max_level` and then report a launch failure for every rung — that
   attributes a finding to a posture that was never tested.
+- **Each rung adds exactly one capability, and the code gates on that.** A rung's
+  `capabilities`/`adds` are not labels: `requires_rotation` decides whether a
+  proxy is acquired (L4+ only), `is_behavioral` decides whether the journey is
+  planned at full fidelity (L5+ only), and `is_persistent` decides whether the
+  profile notice fires. `ladder_problems()` / the ladder tests fail if a rung
+  silently repeats the rung below it or turns on two axes at once — the bug that
+  made L3/L4/L5 byte-identical and gave every rung a referer and scroll behavior.
+  Add a capability by extending `CAPABILITIES` and gating on it, not by copying a
+  rung's options dict.
+- **`AuditConfig.headless` is an override, not a default.** `None` means "run the
+  posture each rung declares"; `True`/`False` forces every browser rung and the
+  runner emits a notice when that contradicts a rung. A plain `True` here was the
+  original flattening bug — it made L1's headless/headed distinction vanish while
+  the ladder still claimed to isolate it.
 - **UI assets are read through `read_ui_asset()`, which accepts only a bare
   filename.** That is what keeps traversal out in both the directory and the
   zipapp form; a plain `Path` read inside the archive silently fails.

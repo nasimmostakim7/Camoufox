@@ -22,8 +22,20 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+try:  # The vendored engine is the single source of truth for the ladder.
+    from ._engine.evasion import EVASION_LEVELS as _LADDER
+except Exception:  # pragma: no cover - only if the engine is absent/broken
+    _LADDER = ()
+
 #: Rungs whose definition is the exit IP. Pruned when no pool is configured.
-ROTATION_LEVEL_IDS = (4, 5, 6)
+#:
+#: Derived from the ladder rather than restated: a second hand-kept list of
+#: "which rungs rotate" is exactly how the runner and the console drift apart,
+#: and then one of them reports an IP-rotation verdict for a rung that never
+#: rotated. Falls back to the known ids only if the engine cannot be read.
+ROTATION_LEVEL_IDS = tuple(
+    level.id for level in _LADDER if getattr(level, "requires_rotation", False)
+) or (4, 5, 6)
 
 #: A gateway fronts many exits behind one endpoint and rotates per session token.
 _GATEWAY_TOKEN = "{session}"

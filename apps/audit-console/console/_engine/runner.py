@@ -113,6 +113,8 @@ class AuditRunner:
         self._virtual_display_used = False
         self._geoip_missing_noted = False
         self._no_proxy_noted = False
+        self._headless_override_noted = False
+        self._persistence_noted = False
         self._rotator = None
         if config.proxy:
             from camoufox.proxy import build_rotator
@@ -184,6 +186,42 @@ class AuditRunner:
             ),
         )
 
+    def _note_headless_override(self, level: EvasionLevel, forced: bool) -> None:
+        declared = bool((level.camoufox_options or {}).get("headless"))
+        if declared == forced:
+            # The override agrees with this rung's own posture, so nothing was
+            # actually overridden and there is nothing to announce. Checking
+            # before the once-only flag matters: the first rung that agrees must
+            # not consume the notice owed to a later rung that does not.
+            return
+        if self._headless_override_noted:
+            return
+        self._headless_override_noted = True
+        forced_word = "headless" if forced else "headful"
+        self._progress(
+            event="notice",
+            message=(
+                f"The configured headless setting forced every rung {forced_word}, "
+                f"overriding the posture {level.name} is defined by. The run is "
+                "still valid, but this rung now measures a "
+                f"{forced_word} stock browser rather than its declared mode."
+            ),
+        )
+
+    def _note_persistence_unavailable(self, level: EvasionLevel) -> None:
+        if self._persistence_noted:
+            return
+        self._persistence_noted = True
+        self._progress(
+            event="notice",
+            message=(
+                f"{level.name} is defined by a durable profile and cookie jar, but "
+                "the audit reuses one browser across visitors and gives each a fresh "
+                "context, so no profile persists. The rung ran, but the "
+                "returning-visitor signal it names was not exercised."
+            ),
+        )
+
     def _launch_options(self, level: EvasionLevel) -> Dict[str, Any]:
         """The Camoufox launch options for one rung, with fallbacks applied.
 
@@ -193,7 +231,15 @@ class AuditRunner:
         extra.
         """
         options = dict(level.camoufox_options or {})
-        options.setdefault("headless", self.config.headless)
+        # A rung declares its own headed/headless posture (L1 exists precisely
+        # because it is headless), so the config value is an *override* for hosts
+        # that cannot honour the posture -- it is applied on top, and announced
+        # when it contradicts the rung.
+        override = self.config.headless
+        if override is not None:
+            options["headless"] = bool(override)
+            self._note_headless_override(level, bool(override))
+        options.setdefault("headless", False)
         if not options["headless"]:
             # A headed rung needs an X server. On a headless host (a CI runner, a
             # VPS) the launch would fail outright with "no DISPLAY environment
@@ -603,11 +649,21 @@ class AuditRunner:
         return lr
 
     async def _run_one_visit(self, level: EvasionLevel, index: int) -> Optional[VisitResult]:
-        plan = plan_visit(self.config.journey, self._rng)
+        # The journey is only planned at full fidelity on a rung that claims
+        # behavior. A rung below it sends a single direct request, so the arrival
+        # source, referer, dwell, scroll and typing it "has" cannot confound the
+        # axis that rung is actually testing.
+        plan = plan_visit(self.config.journey, self._rng, behavior=level.is_behavioral)
         url = self._rng.choice(self._candidate_paths())
-        plan.referer = build_arrival_referer(plan.source, self.config.target_url, self._rng)
+        if plan.source != ArrivalSource.DIRECT:
+            plan.referer = build_arrival_referer(plan.source, self.config.target_url, self._rng)
 
-        proxy_session, skip_reason = self._acquire_proxy()
+        # A proxy is acquired only for a rung that is *defined* by rotating the
+        # exit IP. Earlier rungs must go out on this host's own address, otherwise
+        # L3's verdict would be the product of an IP the rung never claimed to use.
+        proxy_session, skip_reason = (None, None)
+        if level.requires_rotation:
+            proxy_session, skip_reason = self._acquire_proxy()
         if skip_reason:
             visit = VisitResult(
                 visitor_index=index,
@@ -643,16 +699,20 @@ class AuditRunner:
 
     async def _run_browser_visit(self, level, plan, url, proxy_session, index) -> VisitResult:
         options = self._launch_options(level)
-        if level.id >= 4 and proxy_session is None:
+        if level.requires_rotation and proxy_session is None:
             # This rung's whole claim is "a fresh exit IP per visitor". With no
             # pool there is nothing to rotate, so say so rather than let a
             # direct-IP result be read as an IP-rotation verdict.
             self._note_no_proxy(level)
         launch_kwargs = {k: v for k, v in options.items() if k != "persistent_context"}
-        if options.get("persistent_context"):
-            # Persistent profiles are per-identity, so they cannot be shared
-            # across a rotated pool; fall back to a per-visit context.
-            launch_kwargs.pop("user_data_dir", None)
+        # The audit reuses one browser across visitors and gives each a fresh
+        # context, so no rung can actually carry a profile directory: not the
+        # persistent rung (which is named for it) and not the ones below (which
+        # must stay throwaway identities). Drop it, and say so for the rung whose
+        # name promises it.
+        launch_kwargs.pop("user_data_dir", None)
+        if level.is_persistent:
+            self._note_persistence_unavailable(level)
 
         try:
             # Resolved inside the guard: the import is lazy, and a host without

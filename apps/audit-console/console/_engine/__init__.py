@@ -36,7 +36,14 @@ it would defeat the defense under test and blind the operator to it.
 
 from .config import AuditConfig, AuditReport, LevelResult, SafetyLimits, VisitResult
 from .detection import Verdict, WafDetection, classify_response, detect_vendor
-from .evasion import EVASION_LEVELS, EvasionLevel, level_by_id, levels_up_to
+from .evasion import (
+    CAPABILITIES,
+    EVASION_LEVELS,
+    EvasionLevel,
+    ladder_problems,
+    level_by_id,
+    levels_up_to,
+)
 from .journey import ArrivalSource, JourneyConfig, VisitPlan, plan_visit
 from .runner import AuditRunner, SafetyStop, run_audit
 from .schedule import Arrival, ArrivalPattern, Schedule, ScheduleConfig, build_schedule
@@ -61,6 +68,8 @@ __all__ = [
     # evasion ladder
     "EvasionLevel",
     "EVASION_LEVELS",
+    "CAPABILITIES",
+    "ladder_problems",
     "level_by_id",
     "levels_up_to",
     # schedule

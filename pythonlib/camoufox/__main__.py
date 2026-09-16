@@ -880,7 +880,18 @@ def audit_levels() -> None:
 @click.option("--max-concurrency", type=int, default=8, show_default=True, help="Hard ceiling on concurrent visitors.")
 @click.option("--max-per-minute", type=int, default=60, show_default=True, help="Hard ceiling on arrivals per minute.")
 @click.option("--max-per-proxy", type=int, default=0, show_default=True, help="Ceiling per proxy exit (0 = unlimited).")
-@click.option("--headful", is_flag=True, help="Run browsers with a visible window.")
+@click.option(
+    "--headless",
+    "force_headless",
+    is_flag=True,
+    help="Force every browser level headless (merges L1 into the levels above it).",
+)
+@click.option(
+    "--headful",
+    "force_headful",
+    is_flag=True,
+    help="Force every browser level headful. Needs a display, or Camoufox's virtual one.",
+)
 @click.option("--seed", type=int, default=None, help="Seed for reproducible scheduling and behavior.")
 @click.option("--out", type=click.Path(file_okay=False), default=None, help="Directory for JSON/CSV/HTML reports.")
 @click.option("--quiet", is_flag=True, help="Only print the final report.")
@@ -888,7 +899,7 @@ def audit_run(
     target, scope_hosts, allow_subdomains, authorized, visitors, hours, pattern,
     max_level, levels, proxy_file, proxy_gateway, proxy_policy,
     max_requests, max_rps, max_concurrency, max_per_minute, max_per_proxy,
-    headful, seed, out, quiet,
+    force_headless, force_headful, seed, out, quiet,
 ) -> None:
     """
     Run a WAF / bot-defense audit against an authorized target
@@ -943,7 +954,7 @@ def audit_run(
         ),
         proxy=proxy,
         seed=seed,
-        headless=not headful,
+        headless=True if force_headless else (False if force_headful else None),
     )
 
     problems = config.validate()

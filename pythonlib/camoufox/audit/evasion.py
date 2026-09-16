@@ -18,14 +18,39 @@ means the audit stops early instead of building an elaborate browser for nothing
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 __all__ = [
+    "CAPABILITIES",
     "EvasionLevel",
     "EVASION_LEVELS",
     "level_by_id",
     "levels_up_to",
+    "ladder_problems",
 ]
+
+#: The axes the ladder is allowed to vary, in the order they are introduced.
+#:
+#: The ladder's whole claim is that each rung differs from the one below by
+#: exactly *one* of these. Without a name for each axis that claim is only a
+#: comment: nothing stops a rung from quietly turning on two things at once (or
+#: from repeating the rung below it verbatim), and either mistake makes the
+#: ladder unable to attribute a verdict to a control. Naming the axes is what
+#: lets `ladder_problems()` and the runner gate on them.
+CAPABILITIES: Tuple[str, ...] = (
+    # A real engine instead of a raw HTTP client.
+    "browser",
+    # A coherent navigation header set (UA, Accept, Sec-Fetch-*, Referer).
+    "headers",
+    # A spoofed, geo/timezone-aligned fingerprint from the anti-detect engine.
+    "fingerprint",
+    # A fresh exit IP per visitor, from a proxy pool.
+    "ip_rotation",
+    # Human cadence: a planned journey plus humanized input.
+    "behavior",
+    # A durable profile and cookie jar, rather than a throwaway context.
+    "persistence",
+)
 
 
 @dataclass(frozen=True)
@@ -35,6 +60,12 @@ class EvasionLevel:
 
     `client` selects the transport shape; `camoufox_options` are merged into the
     browser launch; `headers` are extra request headers.
+
+    `capabilities` is the *cumulative* set of axes in play at this rung, and
+    `adds` is the single axis this rung introduces over the one below. The
+    runner gates real work on these (acquiring a proxy only for a rung that
+    rotates, planning a journey only for a rung that claims behavior), so the
+    set has to match what the rung actually does, not just what it is called.
     """
 
     id: int
@@ -46,6 +77,25 @@ class EvasionLevel:
     headers: Dict[str, str] = field(default_factory=dict)
     #: What this rung adds over the one below, in operator-facing terms.
     isolates: str = ""
+    #: Cumulative capability axes active at this rung.
+    capabilities: frozenset = frozenset()
+    #: The one capability this rung introduces over the rung below.
+    adds: Optional[str] = None
+
+    @property
+    def requires_rotation(self) -> bool:
+        """True when this rung is *defined* by a fresh exit IP per visitor."""
+        return "ip_rotation" in self.capabilities
+
+    @property
+    def is_behavioral(self) -> bool:
+        """True when this rung is allowed to spend time behaving like a human."""
+        return "behavior" in self.capabilities
+
+    @property
+    def is_persistent(self) -> bool:
+        """True when this rung is defined by a durable profile."""
+        return "persistence" in self.capabilities
 
     def to_dict(self) -> dict:
         return {
@@ -55,11 +105,18 @@ class EvasionLevel:
             "description": self.description,
             "client": self.client,
             "isolates": self.isolates,
+            "adds": self.adds,
+            "capabilities": sorted(self.capabilities),
+            "requires_rotation": self.requires_rotation,
         }
 
 
-#: A realistic modern Chrome UA on Windows, used from L2 up. L0/L1 deliberately
-#: send the truth (or a default library UA) so the ladder has a naive baseline.
+#: A realistic modern Chrome UA on Windows. Kept for the header-consistency rung
+#: and for any caller that audits a target which rejects Camoufox's own UA; the
+#: ladder itself does not need it, because every browser rung lets Camoufox set a
+#: UA that matches the fingerprint it generated. Sending a fixed Chrome UA from a
+#: fingerprint that says "macOS" would be the exact inconsistency L2 exists to
+#: rule out.
 _CHROME_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -76,6 +133,8 @@ EVASION_LEVELS: List[EvasionLevel] = [
             "no JavaScript, no cookies."
         ),
         client="http",
+        capabilities=frozenset(),
+        adds=None,
         isolates=(
             "The baseline everything else is measured against. If the defense "
             "cannot stop this, it is not protecting anything."
@@ -87,10 +146,12 @@ EVASION_LEVELS: List[EvasionLevel] = [
         name="L1 - Headless browser",
         description=(
             "Real Camoufox browser, headless, default fingerprint, no proxy, no "
-            "humanization."
+            "humanization. Navigation headers are whatever the engine sends."
         ),
         client="browser",
         camoufox_options={"headless": True},
+        capabilities=frozenset({"browser"}),
+        adds="browser",
         isolates=(
             "Whether a stock headless browser is distinguishable at all. A "
             "defense that stops here is catching headless/automation tells, not "
@@ -102,9 +163,10 @@ EVASION_LEVELS: List[EvasionLevel] = [
         key="header_consistency",
         name="L2 - Consistent headers",
         description=(
-            "Headful browser with a coherent browser-like navigation profile: "
-            "matching User-Agent, Accept, Accept-Language, Sec-Fetch-* and "
-            "Referer."
+            "Headful browser with a coherent navigation header profile: matching "
+            "Accept, Accept-Language, Cache-Control and Sec-Fetch-*. Arrival "
+            "Referer is a journey signal, so it belongs to the behavioral rung, "
+            "not here."
         ),
         client="browser",
         camoufox_options={"headless": False},
@@ -121,6 +183,8 @@ EVASION_LEVELS: List[EvasionLevel] = [
             "Sec-Fetch-User": "?1",
             "Cache-Control": "max-age=0",
         },
+        capabilities=frozenset({"browser", "headers"}),
+        adds="headers",
         isolates=(
             "Header-level anomaly detection. Catches a defense that keys on "
             "missing or contradictory navigation headers rather than on the "
@@ -141,7 +205,6 @@ EVASION_LEVELS: List[EvasionLevel] = [
             "headless": False,
             "geoip": True,
             "os": ["windows", "macos", "linux"],
-            "humanize": True,
         },
         headers={
             "Accept": (
@@ -155,6 +218,8 @@ EVASION_LEVELS: List[EvasionLevel] = [
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
         },
+        capabilities=frozenset({"browser", "headers", "fingerprint"}),
+        adds="fingerprint",
         isolates=(
             "Fingerprint-based filtering: canvas/WebGL hashes, navigator "
             "inconsistencies, screen metrics. This is the rung that tests the "
@@ -175,7 +240,6 @@ EVASION_LEVELS: List[EvasionLevel] = [
             "headless": False,
             "geoip": True,
             "os": ["windows", "macos", "linux"],
-            "humanize": True,
         },
         headers={
             "Accept": (
@@ -189,6 +253,8 @@ EVASION_LEVELS: List[EvasionLevel] = [
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
         },
+        capabilities=frozenset({"browser", "headers", "fingerprint", "ip_rotation"}),
+        adds="ip_rotation",
         isolates=(
             "IP-reputation and rate-limit defenses. Tests whether the defense "
             "handles many distinct source IPs, i.e. whether it is only catching "
@@ -223,6 +289,10 @@ EVASION_LEVELS: List[EvasionLevel] = [
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
         },
+        capabilities=frozenset(
+            {"browser", "headers", "fingerprint", "ip_rotation", "behavior"}
+        ),
+        adds="behavior",
         isolates=(
             "Behavioral / interaction analysis. Catches defenses that score "
             "mouse entropy, dwell time, or request cadence rather than the "
@@ -258,6 +328,17 @@ EVASION_LEVELS: List[EvasionLevel] = [
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
         },
+        capabilities=frozenset(
+            {
+                "browser",
+                "headers",
+                "fingerprint",
+                "ip_rotation",
+                "behavior",
+                "persistence",
+            }
+        ),
+        adds="persistence",
         isolates=(
             "Reputation / trust scoring over time. Tests whether the defense "
             "escalates on a client whose cookies and profile it has seen."
@@ -266,6 +347,44 @@ EVASION_LEVELS: List[EvasionLevel] = [
 ]
 
 _BY_ID = {level.id: level for level in EVASION_LEVELS}
+
+
+def ladder_problems(levels: Optional[List[EvasionLevel]] = None) -> List[str]:
+    """
+    Check the ladder's defining property: each rung adds exactly one capability.
+
+    Returns a list of human-readable problems; empty means the ladder is sound.
+    This is enforced as a test rather than trusted as a comment, because a rung
+    that silently repeats the rung below it (or turns on two axes at once) makes
+    a verdict unattributable -- which is the one thing the ladder exists to
+    prevent.
+    """
+    levels = list(EVASION_LEVELS if levels is None else levels)
+    problems: List[str] = []
+    previous: frozenset = frozenset()
+    for index, level in enumerate(levels):
+        if level.id != index:
+            problems.append(f"{level.name}: expected id {index}, got {level.id}")
+        if level.capabilities < previous:
+            problems.append(
+                f"{level.name}: drops capability "
+                f"{sorted(previous - level.capabilities)} that the rung below had"
+            )
+        added = level.capabilities - previous
+        expected = set() if level.adds is None else {level.adds}
+        if added != expected:
+            problems.append(
+                f"{level.name}: declares adds={level.adds!r} but actually changes "
+                f"{sorted(added)}"
+            )
+        if level.adds is not None and level.adds not in CAPABILITIES:
+            problems.append(f"{level.name}: unknown capability {level.adds!r}")
+        if level.client == "browser" and "browser" not in level.capabilities:
+            problems.append(f"{level.name}: a browser rung must declare 'browser'")
+        if level.client == "http" and level.capabilities:
+            problems.append(f"{level.name}: an HTTP rung must not claim capabilities")
+        previous = level.capabilities
+    return problems
 
 
 def level_by_id(level_id: int) -> EvasionLevel:
