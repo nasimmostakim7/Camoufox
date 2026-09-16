@@ -84,6 +84,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "camoufox[gui] @ git+https://github.com/${{ github.repository }}.git@${{ github.sha }}#subdirectory=pythonlib"
           python -m pip install pyinstaller
+          # Build-time only, never bundled: PyInstaller needs Pillow to convert the
+          # .ico into the .icns that a macOS .app requires. Without it, BUNDLE
+          # rejects the icon outright.
+          python -m pip install pillow
 
       - name: Build
         # --clean discards the analysis cache; a stale cache would quietly ship
@@ -121,11 +125,26 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         shell: pwsh
         run: |
-          & "dist\CamoufoxGUI\CamoufoxGUI.exe" --self-check
-          $code = $LASTEXITCODE
-          Write-Host "exit code: $code"
-          Get-Content "dist\CamoufoxGUI\CamoufoxGUI-selfcheck.log"
-          if ($code -ne 0) { exit 1 }
+          # Start-Process -Wait, not a plain call: PowerShell does not wait for
+          # GUI-subsystem executables, so `&` returned immediately, $LASTEXITCODE
+          # came back empty, and the log was read before it had been written.
+          $p = Start-Process -FilePath "dist\CamoufoxGUI\CamoufoxGUI.exe" `
+                             -ArgumentList "--self-check" -Wait -PassThru
+          Write-Host "exit code: $($p.ExitCode)"
+
+          $log = "dist\CamoufoxGUI\CamoufoxGUI-selfcheck.log"
+          if (-not (Test-Path $log)) {
+            Write-Host "no self-check log was written"
+            exit 1
+          }
+          Get-Content $log
+
+          # Gated on the log rather than the exit code: the log is written before
+          # the process exits, so it is the more reliable of the two signals.
+          if (-not (Select-String -Path $log -Pattern "self-check OK" -Quiet)) {
+            Write-Host "self-check did not report OK"
+            exit 1
+          }
 
       - name: Verify shipped data files
         # Asserts the assets a missing `datas` entry would strip, named

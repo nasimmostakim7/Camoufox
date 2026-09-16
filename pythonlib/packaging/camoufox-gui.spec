@@ -210,10 +210,20 @@ coll = COLLECT(
 # has no Info.plist, so the Dock shows a generic icon and the window cannot be
 # focused or activated normally.
 if sys.platform == "darwin":
+    # BUNDLE accepts only .icns. PyInstaller converts the .ico for us, but only
+    # when Pillow is importable; without it the build fails rather than falling
+    # back, so the icon is dropped instead of taking down the whole bundle.
+    try:
+        import PIL  # noqa: F401
+
+        bundle_icon = str(ICON)
+    except ImportError:
+        bundle_icon = None
+
     app = BUNDLE(
         coll,
         name="CamoufoxGUI.app",
-        icon=str(ICON),
+        icon=bundle_icon,
         bundle_identifier="com.camoufox.manager",
         info_plist={
             "CFBundleName": "Camoufox Manager",
