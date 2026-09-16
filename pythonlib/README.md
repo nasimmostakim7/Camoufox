@@ -271,12 +271,16 @@ Storage
 
 ### `path`
 
-Print the install directory path.
+Print the directory holding the active browser build.
 
 ```bash
 > camoufox path
-/home/name/.cache/camoufox
+/home/name/.cache/camoufox/browsers/official/152.0.4-beta.30-5720d45b
 ```
+
+`fetch` installs each build under `browsers/<repo>/<version>/`, so this is the
+directory containing `camoufox-bin`, not the cache root. A pre-multiversion
+install, which kept the build flat, still prints the cache root.
 
 <hr width=50>
 

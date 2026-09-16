@@ -27,6 +27,7 @@ from .multiversion import (
     REPO_CACHE_FILE,
     InstalledVersion,
     find_install,
+    get_active_path,
     get_default_channel,
     latest_per_build,
     list_installed,
@@ -1261,9 +1262,25 @@ def active_cmd():
 @cli.command(name="path")
 def path_cmd():
     """
-    Print the install directory path
+    Print the directory holding the active browser build
+
+    \b
+    Examples:
+      camoufox path
     """
-    click.echo(INSTALL_DIR)
+    # The build does not live directly in INSTALL_DIR. `fetch` installs it under
+    # browsers/<repo>/<version>/, so printing INSTALL_DIR pointed callers at a
+    # directory with no camoufox-bin in it -- a script or CI step that then ran
+    # "$(camoufox path)/camoufox-bin" failed with "not found" on a machine where
+    # the browser was installed and working.
+    #
+    # The flat layout is still what a pre-multiversion install has, so it is
+    # checked before falling back to INSTALL_DIR.
+    active = get_active_path()
+    if active is not None:
+        click.echo(active)
+    else:
+        click.echo(INSTALL_DIR)
 
 
 @cli.group(name="proxy")
