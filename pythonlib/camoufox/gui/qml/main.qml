@@ -1714,9 +1714,21 @@ ApplicationWindow {
 
                                         CheckBox {
                                             Layout.leftMargin: s3
-                                            text: "Headless browsers"
+                                            text: "Force headless for every level"
                                             checked: auditBackend.headless
                                             onToggled: auditBackend.setHeadless(checked)
+                                        }
+
+                                        Muted {
+                                            Layout.leftMargin: s3
+                                            Layout.fillWidth: true
+                                            wrapMode: Text.WordWrap
+                                            text: "Off (default): each level runs the posture it "
+                                                  + "defines - L1 headless, L2 and up headful - so the "
+                                                  + "ladder isolates one control at a time. On: every "
+                                                  + "browser level is forced headless, which is useful on "
+                                                  + "a host that cannot show a window but merges L1 into "
+                                                  + "the levels above it. The run says so when it overrides."
                                         }
 
                                         Item { Layout.preferredHeight: s2 }

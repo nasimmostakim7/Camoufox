@@ -315,7 +315,12 @@ class AuditService:
             seed=seed,
             limits=CONSOLE_LIMITS,
             extra_headers=dict(extra_headers or {}),
-            headless=True,
+            # Each rung runs the posture it defines; on this host the headed rungs
+            # fall back to Camoufox's virtual display, which is a real headed
+            # browser rather than a headless one. Forcing headless here would
+            # collapse L1 into the rungs above it and quietly change what L2+
+            # measures.
+            headless=None,
             proxy=pool.spec if pool is not None else None,
         )
         problems = config.validate()
