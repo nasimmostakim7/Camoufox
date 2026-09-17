@@ -1270,10 +1270,31 @@ def active_cmd():
 
 
 @cli.command(name="path")
-def path_cmd():
+@click.option(
+    "--browser",
+    "browser",
+    is_flag=True,
+    help="Print the active browser's directory (where camoufox-bin lives) "
+    "instead of the install directory.",
+)
+def path_cmd(browser):
     """
     Print the install directory path
+
+    The install directory is the cache root. With --browser, print the directory
+    holding the active browser instead: the binary and the resources the Python
+    API resolves beside it (properties.json, camoufox.cfg, fonts/) live in a
+    per-version subdirectory of the root, so callers that need to find or pack
+    the browser itself cannot use the root. `camoufox path` keeps its old meaning
+    for callers that only need the cache root.
     """
+    # Kept as a lazy import: the module is on the fetch/launch path, and this
+    # command is the one place that should not pull it in eagerly.
+    if browser:
+        from .pkgman import camoufox_path
+
+        click.echo(camoufox_path())
+        return
     click.echo(INSTALL_DIR)
 
 

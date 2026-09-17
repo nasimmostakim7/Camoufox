@@ -471,6 +471,55 @@ class AuditBackend(QObject):
         self._proxy_file = (value or "").strip()
         self.changed.emit()
 
+    @Slot(result="QVariantMap")
+    def browseProxyFile(self) -> dict:
+        """
+        Open a file chooser for the proxy list and adopt whatever is picked.
+
+        The chosen path is validated here rather than in QML, so the operator
+        sees "37 usable proxies" the moment they pick a file instead of finding
+        out when the run starts. Picking a file also sets the field, so the
+        displayed path and the path the run will use cannot drift apart.
+
+        QFileDialog needs QtWidgets, which this app does not otherwise use, and
+        its native path wants a QApplication rather than the QGuiApplication the
+        app creates. Both are handled: the built-in Qt dialog is requested, and
+        any failure falls back to telling the operator to paste the path, which
+        the text field still accepts.
+        """
+        try:
+            from PySide6.QtWidgets import QFileDialog
+        except Exception:
+            return {
+                "ok": False,
+                "path": "",
+                "message": "A file chooser is unavailable in this build; paste the path instead.",
+            }
+
+        start_dir = str(Path(self._proxy_file).expanduser().parent) if self._proxy_file else str(Path.home())
+        try:
+            path, _ = QFileDialog.getOpenFileName(
+                None,
+                "Select a proxy list",
+                start_dir,
+                "Proxy lists (*.txt *.csv *.list);;All files (*)",
+                options=QFileDialog.Option.DontUseNativeDialog,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "path": "",
+                "message": f"Could not open a file chooser ({exc}); paste the path instead.",
+            }
+
+        if not path:
+            return {"ok": False, "path": "", "message": "No file selected."}
+
+        self._proxy_file = path
+        self.changed.emit()
+        result = self.validateProxyFile(path)
+        return {"ok": result.get("ok", False), "path": path, "message": result.get("message", "")}
+
     @Property(str, notify=changed)
     def proxyGateway(self):
         return self._proxy_gateway
