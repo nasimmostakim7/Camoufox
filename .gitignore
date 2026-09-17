@@ -9,6 +9,10 @@ launch.exe
 
 
 # Internal testing
+# PyInstaller packaging scratch and its build environment (see
+# pythonlib/packaging/README.md). `dist/` above already covers the output.
+/build/
+/.build-venv/
 /extra-docs
 pythonlib/test*
 !pythonlib/tests/

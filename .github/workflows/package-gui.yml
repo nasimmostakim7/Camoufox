@@ -1,0 +1,245 @@
+name: Build desktop app
+
+# Packages the Camoufox Manager GUI (Audit tab included) as a standalone
+# application, so it can be handed to someone who has no Python.
+#
+# PyInstaller does not cross-compile: each archive is built on the OS it runs on.
+# That is why this job is a matrix over runner images rather than one job with a
+# target flag -- there is no flag.
+#
+# Trigger:
+#   * workflow_dispatch             -> build, downloadable via "Artifacts"
+#   * push a "v*-gui" tag           -> build all three and attach to that Release
+#
+# Prefer workflow_dispatch. The repository already has a Build and Release
+# workflow that fires on `tags: ["*"]` and cross-compiles the browser for the
+# whole 9-job matrix, so pushing any tag starts that too. Tagging is worth it
+# only when the archives should be attached to a Release, and the prefix below
+# at least keeps this workflow off the version tags.
+#
+# The browser is deliberately not bundled. It is ~470 MB per platform, is fetched
+# at runtime by `camoufox fetch`, and its install path is recorded absolutely, so
+# bundling it would break as soon as the folder moved.
+
+on:
+  workflow_dispatch:
+  # Runs on a pull request that touches the packaging files, so the pipeline is
+  # exercised by the change that affects it rather than after it lands. The paths
+  # filter keeps the three-archive build off unrelated pull requests.
+  pull_request:
+    paths:
+      - "pythonlib/packaging/**"
+      - ".github/workflows/package-gui.yml"
+  push:
+    tags:
+      - "v*-gui"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            artifact: CamoufoxGUI-windows-x64
+          - name: linux-x64
+            os: ubuntu-24.04
+            artifact: CamoufoxGUI-linux-x64
+          - name: macos-arm64
+            os: macos-14
+            artifact: CamoufoxGUI-macos-arm64
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Qt runtime libraries (Linux)
+        # Qt needs these at runtime; the runner does not ship them. Without
+        # libxkbcommon-x11 the offscreen check below cannot even create a
+        # QGuiApplication, and without libEGL the app fails on a real desktop.
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            zip \
+            libgl1 libegl1 libxkbcommon-x11-0 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+            libxcb-render-util0 libxcb-shape0 libxcb-xfixes0 \
+            libxcb-xinerama0 libdbus-1-3 libfontconfig1
+
+      - name: Install the package and PyInstaller
+        # From the git URL, not PyPI: the Audit tab is this repository's addition
+        # and the published `camoufox` package is upstream's, without it.
+        #
+        # Pinned to github.sha rather than github.ref_name: on a pull_request event
+        # ref_name is "<number>/merge", which is not a git ref and would fail.
+        # github.sha is a real commit in both cases -- the merge commit for a pull
+        # request, the tagged commit for a tag push.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "camoufox[gui] @ git+https://github.com/${{ github.repository }}.git@${{ github.sha }}#subdirectory=pythonlib"
+          python -m pip install pyinstaller
+          # Build-time only, never bundled: PyInstaller needs Pillow to convert the
+          # .ico into the .icns that a macOS .app requires. Without it, BUNDLE
+          # rejects the icon outright.
+          python -m pip install pillow
+
+      - name: Build
+        # --clean discards the analysis cache; a stale cache would quietly ship
+        # an old bundle.
+        run: python -m PyInstaller pythonlib/packaging/camoufox-gui.spec --noconfirm --clean
+
+      - name: Self-check the bundle (Linux)
+        # The headless gate: loads the real QML under the offscreen Qt platform.
+        # It catches the failures that are otherwise invisible -- a missing QML
+        # data file, a Qt QML module left out, a broken audit bridge.
+        if: runner.os == 'Linux'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          ./dist/CamoufoxGUI/CamoufoxGUI --self-check || true
+          echo "--- self-check verdict ---"
+          cat dist/CamoufoxGUI/CamoufoxGUI-selfcheck.log
+          grep -q "self-check OK" dist/CamoufoxGUI/CamoufoxGUI-selfcheck.log
+
+      - name: Self-check the bundle (macOS)
+        # macOS CI runners have no window server, and Qt's offscreen plugin is
+        # not shipped in the PySide6 wheel, so a QGuiApplication cannot start
+        # here. The bundle is verified by the data-file step below instead.
+        if: runner.os == 'macOS'
+        run: |
+          APP="dist/CamoufoxGUI.app/Contents/MacOS/CamoufoxGUI"
+          echo "bundle executable: $(test -x "$APP" && echo present || echo MISSING)"
+          test -x "$APP"
+
+      - name: Self-check the bundle (Windows)
+        # The exe is a GUI-subsystem build, so it has no console: --self-check
+        # writes its verdict to a file and the exit code carries the result.
+        if: runner.os == 'Windows'
+        env:
+          QT_QPA_PLATFORM: offscreen
+        shell: pwsh
+        run: |
+          # Start-Process -Wait, not a plain call: PowerShell does not wait for
+          # GUI-subsystem executables, so `&` returned immediately, $LASTEXITCODE
+          # came back empty, and the log was read before it had been written.
+          $p = Start-Process -FilePath "dist\CamoufoxGUI\CamoufoxGUI.exe" `
+                             -ArgumentList "--self-check" -Wait -PassThru
+          Write-Host "exit code: $($p.ExitCode)"
+
+          $log = "dist\CamoufoxGUI\CamoufoxGUI-selfcheck.log"
+          if (-not (Test-Path $log)) {
+            Write-Host "no self-check log was written"
+            exit 1
+          }
+          Get-Content $log
+
+          # Gated on the log rather than the exit code: the log is written before
+          # the process exits, so it is the more reliable of the two signals.
+          if (-not (Select-String -Path $log -Pattern "self-check OK" -Quiet)) {
+            Write-Host "self-check did not report OK"
+            exit 1
+          }
+
+      - name: Verify shipped data files
+        # Asserts the assets a missing `datas` entry would strip, named
+        # individually so a failure says which one vanished. Paths differ per OS:
+        # Windows/Linux keep them under _internal/, a macOS .app under Resources.
+        shell: bash
+        run: |
+          set -eu
+          if [ -d "dist/CamoufoxGUI.app/Contents/Resources" ]; then
+            ROOT="dist/CamoufoxGUI.app/Contents/Resources"
+          else
+            ROOT="dist/CamoufoxGUI/_internal"
+          fi
+          [ -d "$ROOT" ] || { echo "no bundle root found"; ls -la dist; exit 1; }
+          echo "checking under $ROOT"
+          for f in \
+            camoufox/gui/qml/main.qml \
+            camoufox/gui/assets/icon.ico \
+            camoufox/browserforge.yml \
+            camoufox/territoryInfo.xml \
+            language_tags/data/json/index.json \
+          ; do
+            test -e "$ROOT/$f" || { echo "MISSING: $f"; exit 1; }
+            echo "ok: $f"
+          done
+          # The fingerprint generator's Bayesian network, inside a sub-package.
+          find "$ROOT/apify_fingerprint_datapoints" -name "input-network-definition.zip" -print -quit | grep -q . \
+            || { echo "MISSING: apify input-network-definition.zip"; exit 1; }
+          echo "ok: apify fingerprint data"
+          # Playwright's Node driver, without which no browser launches.
+          find "$ROOT/playwright/driver" -name "node*" -print -quit | grep -q . \
+            || { echo "MISSING: playwright node driver"; exit 1; }
+          echo "ok: playwright driver"
+
+      - name: Report size
+        shell: bash
+        run: du -sh dist/CamoufoxGUI 2>/dev/null || true
+
+      - name: Package the folder
+        # The folder is the deliverable, not the binary: _internal/ carries Qt,
+        # the QML tree and the Playwright driver. macOS gets its .app alongside,
+        # because that is what a user double-clicks there.
+        shell: bash
+        run: |
+          set -eu
+          cd dist
+          TARGETS="CamoufoxGUI"
+          # `if` rather than `[ ... ] && ...`: under `set -e` a failing test in a
+          # && list would abort the step rather than just skip the .app.
+          if [ -d "CamoufoxGUI.app" ]; then
+            TARGETS="CamoufoxGUI CamoufoxGUI.app"
+          fi
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a -tzip "${{ matrix.artifact }}.zip" CamoufoxGUI >/dev/null
+          else
+            zip -qry "${{ matrix.artifact }}.zip" $TARGETS
+          fi
+          ls -lh "${{ matrix.artifact }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Attach to release
+    needs: package
+    # Only on a tag push: an artifact from a manual run has no release to
+    # attach to, and inventing one would be surprising.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all archives
+        uses: actions/download-artifact@v6
+        with:
+          path: archives
+          merge-multiple: true
+
+      - name: List what will be published
+        run: ls -lh archives
+
+      - name: Attach to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: archives/*.zip
+          # The tag already exists: it is what triggered this workflow.
+          fail_on_unmatched_files: true
