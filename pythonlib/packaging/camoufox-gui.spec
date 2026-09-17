@@ -27,6 +27,14 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
+#: The name of the Qt libraries and data files this GUI never loads, kept beside
+#: the spec so both it and hook-camoufox.py filter the same list. See the module
+#: docstring for why `excludes` alone cannot do this.
+sys.path.insert(0, str(Path(SPECPATH)))
+from _qt_trim import report as _trim_report  # noqa: E402
+from _qt_trim import is_denied_artifact  # noqa: E402
+from _qt_trim import trim_binaries, trim_datas  # noqa: E402
+
 #: SPECPATH is the directory holding this spec file, i.e. <repo>/pythonlib/packaging.
 #: The python library itself is one level up, NOT two: `parent.parent` resolves to
 #: the repository root, which has no `camoufox/` package. The icon path below is
@@ -64,11 +72,20 @@ datas += collect_data_files("language_tags")
 
 # PySide6 ships Qt plugins as shared libraries under PySide6/Qt/plugins, plus the
 # Qt6 shared libraries themselves. Neither is found by a plain module scan.
-binaries += collect_dynamic_libs("PySide6")
+#
+# Both collections are pruned by name before they join the bundle. They are asked
+# for "all of PySide6", which is why the spec's `excludes` cannot reach them: the
+# analyzer is handed files, not module names, so a 195 MB WebEngine and the whole
+# Qt 3D/Charts/Designer set travel along unopposed.
+_binaries_before = collect_dynamic_libs("PySide6")
 
 #: Qt's own plugin directory layout must survive, or Qt reports
 #: "could not find or load the Qt platform plugin windows".
-datas += collect_data_files("PySide6", include_py_files=False)
+_datas_before = collect_data_files("PySide6", include_py_files=False)
+
+binaries += trim_binaries(_binaries_before)
+datas += trim_datas(_datas_before)
+print(_trim_report(_binaries_before, binaries, _datas_before, datas))
 
 #: Lazy imports: the GUI (imported inside the `gui` command) and the audit engine
 #: (imported inside the worker thread).
@@ -134,7 +151,6 @@ hiddenimports += [
     "orjson",
     "platformdirs",
     "numpy",
-    "lxml",
     "yaml",
     "requests",
     "screeninfo",
@@ -155,6 +171,14 @@ a = Analysis(
     runtime_hooks=[],
     #: Trim what is demonstrably unused and large. tkinter in particular adds
     #: ~10 MB and is never touched.
+    #:
+    #: These names steer the module graph, so they work on Python packages: with
+    #: `tkinter`, `pandas`, `scipy` and `lxml` listed the built bundle really does
+    #: lose those trees. They do NOT cover Qt's shared libraries -- those arrive
+    #: through collect_dynamic_libs/collect_data_files as files, before the
+    #: analyzer ever looks at a module name, and are pruned by _qt_trim instead.
+    #: The PySide6 entries below are a second line of defence: they stop the
+    #: interpreter from importing the binding even if a library slipped through.
     excludes=[
         "tkinter",
         "matplotlib",
@@ -163,19 +187,65 @@ a = Analysis(
         "PIL",
         "pytest",
         "IPython",
+        "lxml",
         "PySide6.QtWebEngineCore",
         "PySide6.QtWebEngineWidgets",
+        "PySide6.QtWebEngineQuick",
         "PySide6.QtMultimedia",
+        "PySide6.QtMultimediaWidgets",
         "PySide6.Qt3DCore",
         "PySide6.QtCharts",
         "PySide6.QtDataVisualization",
+        "PySide6.QtGraphs",
         "PySide6.QtQuick3D",
+        "PySide6.QtDesigner",
+        "PySide6.QtHelp",
+        "PySide6.QtPdf",
+        "PySide6.QtPdfWidgets",
+        "PySide6.QtLocation",
+        "PySide6.QtPositioning",
+        "PySide6.QtNfc",
+        "PySide6.QtBluetooth",
+        "PySide6.QtSerialPort",
+        "PySide6.QtSensors",
+        "PySide6.QtScxml",
+        "PySide6.QtStateMachine",
+        "PySide6.QtTest",
+        "PySide6.QtTextToSpeech",
+        "PySide6.QtRemoteObjects",
+        "PySide6.QtSpatialAudio",
+        "PySide6.QtVirtualKeyboard",
+        "PySide6.QtWaylandClient",
+        "PySide6.QtHttpServer",
+        "PySide6.QtNetworkAuth",
+        "PySide6.QtLottie",
     ],
     noarchive=False,
     optimize=0,
 )
 
 pyz = PYZ(a.pure)
+
+# The collected-file filters above run before the analysis, and that is not
+# enough: PyInstaller's own `hook-PySide6.QtWebEngineCore` (and its Quick,
+# Widgets and WebChannel siblings) add their libraries to the analysis TOC
+# directly, and the binary dependency walk then pulls `libQt6WebEngineCore` back
+# in from a `DT_NEEDED` entry -- a 194 MB Chromium re-entering after the copy
+# that would have removed it had already run.
+#
+# Pruning the finished TOC is mechanism-independent: whatever route a file took
+# to get here, it is judged by its name on the way out. The keep side is
+# unaffected because `is_denied_*` is a denylist -- anything unrecognised
+# survives, so a future PySide6 addition costs disk rather than a blank window.
+_binaries_before_toc = len(a.binaries)
+_datas_before_toc = len(a.datas)
+a.binaries = [entry for entry in a.binaries if not is_denied_artifact(entry[0])]
+a.datas = [entry for entry in a.datas if not is_denied_artifact(entry[0])]
+print(
+    "Qt trim (post-analysis): "
+    f"binaries {_binaries_before_toc} -> {len(a.binaries)}, "
+    f"datas {_datas_before_toc} -> {len(a.datas)}"
+)
 
 exe = EXE(
     pyz,

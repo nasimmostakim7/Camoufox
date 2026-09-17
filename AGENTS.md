@@ -73,6 +73,50 @@ pytest native-tests/                              # leaks, context lifetime, rep
 pytest pythonlib/tests/                           # pythonlib unit tests (no browser needed)
 ```
 
+## Desktop GUI packaging (PyInstaller)
+
+The Qt bundle lives in `pythonlib/packaging/`. `camoufox-gui.spec` collects the
+PySide6 libraries and plugin tree; `hook-camoufox.py` collects only the project's
+own data and the third-party data files (camoufox, playwright, browserforge,
+language_tags), so the Qt filter belongs in the spec alone.
+
+- **`excludes` cannot remove a Qt library.** `excludes` matches Python module
+  names; `collect_dynamic_libs` / `collect_data_files` hand the analyzer
+  filenames, and PyInstaller's own `hook-PySide6.QtWebEngineCore` (and its Quick /
+  Widgets / WebChannel siblings) insert their libraries into the analysis TOC
+  directly. The binary dependency walk then pulls `libQt6WebEngineCore` back in
+  through a `DT_NEEDED` entry. The working mechanism is to filter the finished
+  TOC in the spec, after `Analysis`, which is blind to how a file got there.
+- **`_qt_trim.py` holds the deny list, and it is a denylist on purpose.** A file
+  the list has never heard of survives, so a future PySide6 addition costs disk
+  rather than a blank window. `is_denied_artifact` is the spec's entry point;
+  `is_denied_library` / `is_denied_qt_data` are the collect-time helpers.
+- **Match normalised module tokens, not raw filenames.** Qt names one module
+  differently in each place it appears: the library is `libQt6WebEngineCore.so.6`
+  and the QML plugin that drags it in is the lower-case, unversioned
+  `libqtwebenginequickplugin.so`. At most one digit after `qt` is the version --
+  `libQt63DCore` is Qt 6's 3D module, so a greedy `qt\d*` ate the `3` and hid the
+  whole 3D family from the filter.
+- **Qt shared libraries land in `datas`, not just `binaries`, and without the
+  `PySide6/` prefix.** Filter `TOC.artifacts` on the bare basename or the library
+  survives at the bundle root while its plugin is dropped.
+- **Kept deliberately:** `libicudata`/`libicui18n`/`libicuuc` (`libQt6Core` needs
+  them), the `Qt/labs/*` modules (`QtQuick.Dialogs` uses the platform dialog),
+  fonts, and the anti-detect engine. The GUI is a Chromium-free Qt Quick app:
+  nothing here embeds a web page, so WebEngine, Multimedia/FFmpeg, 3D, Charts,
+  Pdf and the qmlls/designer/linguist tools all go.
+- **The gate is `--self-check`**, run under `QT_QPA_PLATFORM=offscreen`, which
+  loads the real QML and asserts the audit bindings resolve. Compare its output
+  to a baseline build's: "self-check OK: ... 59 audit bindings resolved" must be
+  byte-identical, not merely exit 0.
+
+Measured on this fork: 907 MB -> 517 MB (-43%) with the trim, self-check
+identical. Rebuild with
+`python -m PyInstaller pythonlib/packaging/camoufox-gui.spec --noconfirm --clean`.
+
+`pythonlib/tests/test_packaging_trim.py` pins both sides -- every required Qt
+library is asserted to survive and every unused one to go.
+
 ## Remotes
 
 - `origin` → `mostakimnasim3/camoufox`
