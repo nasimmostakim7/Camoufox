@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Repository-specific knowledge for agents working in this fork
-(`mostakimnasim3/camoufox`, upstream `daijro/camoufox`).
+(`nasimmostakim7/Camoufox`, upstream `daijro/camoufox`).
 
 ## What this repo is
 
@@ -142,7 +142,7 @@ library is asserted to survive and every unused one to go.
 
 ## Remotes
 
-- `origin` → `mostakimnasim3/camoufox`
+- `origin` → `nasimmostakim7/Camoufox`
 - `upstream` → `daijro/camoufox`
 
 Fetch upstream with `git fetch upstream`; rebase feature branches onto

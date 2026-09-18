@@ -15,7 +15,7 @@ browsers:
   # (`official/stable`), and `get_repo_name()` derives the install directory
   # from it, so renaming would move every existing install and change what
   # `browsers/official/...` resolves to.
-  - repo: mostakimnasim3/camoufox, daijro/camoufox, camoufox/camoufox
+  - repo: nasimmostakim7/Camoufox, daijro/camoufox, camoufox/camoufox
     name: Official
     pattern: "{name}-{version}-{build}-{os}.{arch}.zip"
     versions:

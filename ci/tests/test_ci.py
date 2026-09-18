@@ -2559,7 +2559,7 @@ def test_group_timeout_is_shorter_than_the_job_timeout():
 REPOS_YML = CI_ROOT.parent / "pythonlib" / "camoufox" / "repos.yml"
 BUILD_WORKFLOW = CI_ROOT.parent / ".github" / "workflows" / "build.yml"
 
-FORK_REPO = "mostakimnasim3/camoufox"
+FORK_REPO = "nasimmostakim7/Camoufox"
 UPSTREAM_REPO = "daijro/camoufox"
 
 

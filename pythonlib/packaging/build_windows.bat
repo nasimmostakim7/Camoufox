@@ -49,7 +49,7 @@ echo === Step 3/5: Installing camoufox[gui] and PyInstaller ===
 REM Installed from the git URL, not PyPI: the Audit tab lives in this fork and
 REM the published package is upstream's, without it.
 python -m pip install --upgrade pip --quiet
-python -m pip install "camoufox[gui] @ git+https://github.com/mostakimnasim3/camoufox.git@main#subdirectory=pythonlib" || exit /b 1
+python -m pip install "camoufox[gui] @ git+https://github.com/nasimmostakim7/Camoufox.git@main#subdirectory=pythonlib" || exit /b 1
 python -m pip install pyinstaller || exit /b 1
 
 echo.

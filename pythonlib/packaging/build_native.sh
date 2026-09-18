@@ -38,7 +38,7 @@ echo "=== Step 3/5: Installing camoufox[gui] and PyInstaller ==="
 # From the git URL, not PyPI: the Audit tab is this fork's addition and the
 # published package is upstream's.
 python -m pip install --upgrade pip --quiet
-python -m pip install "camoufox[gui] @ git+https://github.com/mostakimnasim3/camoufox.git@main#subdirectory=pythonlib"
+python -m pip install "camoufox[gui] @ git+https://github.com/nasimmostakim7/Camoufox.git@main#subdirectory=pythonlib"
 python -m pip install pyinstaller
 
 echo

@@ -22,7 +22,7 @@ from camoufox.pkgman import (
     list_available_versions,
 )
 
-FORK = "mostakimnasim3/camoufox"
+FORK = "nasimmostakim7/Camoufox"
 UPSTREAM = "daijro/camoufox"
 
 ASSET = "camoufox-152.0.4-beta.30-lin.x86_64.zip"
