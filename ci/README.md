@@ -61,6 +61,44 @@ produces it, and the suite is chosen for it — the three cannot disagree. The
 `browser_version` input exists for a caller that wants to state the version
 explicitly; it must match.
 
+## Which release the fetch path downloads
+
+The driver-only path does not build: `python -m camoufox fetch` downloads a
+release asset from the repo `pythonlib/camoufox/repos.yml` lists **first** for the
+`Official` entry. That is this fork, with upstream behind it as a fallback.
+
+The order is not cosmetic. The patch guards assert on behaviour that lives in
+`additions/juggler/` — input acknowledgement, mouse edge dispatch, the
+fingerprint setter — and those additions only reach a browser that is built from
+this tree. A release fetched from upstream predates them, so the guards fail
+against a binary that is not missing anything, it is simply a different browser.
+Making the fork primary is what makes the driver-only path test the browser the
+patches are in.
+
+The fallback is what keeps a fetch working when the fork has nothing to offer
+yet — between release cuts, or on a platform the fork did not build. Two things
+are needed for that to hold, and both are checked by tests:
+
+- `list_available_versions()` walks `repo` until a repo yields a version **this
+  platform can install**. An empty release list, a 404, and a release built only
+  for another platform are all "not an answer", not "the answer is nothing". Stop
+  at any of them and the fallback behind it becomes unreachable.
+- The `Official` name stays. It is the default channel (`official/stable`) and
+  `get_repo_name()` derives the install directory from it, so renaming the entry
+  behind the fork would move every existing install and change what
+  `browsers/official/...` resolves to.
+
+**Building the browser to publish it** is `.github/workflows/build.yml`, on a
+tag. The tag has to be `v<version>-<build>` (like `v152.0.4-beta.31`) because the
+fetcher reads both parts out of it, and `<version>` has to be the generation
+`upstream.sh` pins, because the fetch path runs `ci.versions --check-fetched` and
+allows beta drift inside a generation, not a generation apart. The release is
+published neither draft nor prerelease: a draft is invisible to the releases API
+without a token, and the fetch path runs unauthenticated in some workflows, so a
+draft is a release CI can never install. Both the tag and the published assets
+are checked by the workflow itself, the second by asking the anonymous endpoint
+the fetcher asks.
+
 ## The Playwright suite
 
 One suite, fetched fresh per run: upstream playwright-python at the resolved tag.

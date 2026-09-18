@@ -710,21 +710,40 @@ def list_available_versions(
         raise UnsupportedArchitecture(f"Architecture {arch} is not supported for {os_name}")
 
     headers = {"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
-    releases = []
+    versions: List[AvailableVersion] = []
     last_error = None
     for repo in config.repos:
         try:
             api_url = f"https://api.github.com/repos/{repo}/releases"
             resp = requests.get(api_url, timeout=20, headers=headers)
             resp.raise_for_status()
-            releases = resp.json()
-            break
         except Exception as e:
             last_error = e
             continue
-    if not releases and last_error:
+        # Whether a repo has nothing to offer is a question about THIS platform,
+        # not about whether the repo has releases at all. The fork is primary and
+        # may well publish only the targets CI needs; a Windows or macOS user
+        # would then find a release whose assets none of them match, and the walk
+        # would stop there with an empty answer instead of reaching upstream. So
+        # the fallback triggers on "no usable version", which covers an empty
+        # release list and a release built for other platforms alike.
+        found = _versions_from_releases(resp.json(), config, pattern, include_prerelease)
+        if found:
+            versions = found
+            break
+    if not versions and last_error:
         raise last_error
 
+    return versions
+
+
+def _versions_from_releases(
+    releases: List[Dict],
+    config: 'RepoConfig',
+    pattern: 're.Pattern',
+    include_prerelease: bool,
+) -> List[AvailableVersion]:
+    """Every installable version one repo's releases offer for this platform."""
     versions: List[AvailableVersion] = []
 
     for release in releases:

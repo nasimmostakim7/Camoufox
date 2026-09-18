@@ -2549,3 +2549,133 @@ def test_group_timeout_is_shorter_than_the_job_timeout():
     # Four times the slowest healthy invocation measured (296s); below that it
     # starts cutting slow-but-working groups short.
     assert default >= 900
+
+
+# ---------------------------------------------------------------------------
+# The published release the fetch path installs
+# ---------------------------------------------------------------------------
+
+
+REPOS_YML = CI_ROOT.parent / "pythonlib" / "camoufox" / "repos.yml"
+BUILD_WORKFLOW = CI_ROOT.parent / ".github" / "workflows" / "build.yml"
+
+FORK_REPO = "mostakimnasim3/camoufox"
+UPSTREAM_REPO = "daijro/camoufox"
+
+
+def _official_entry():
+    import yaml
+
+    browsers = yaml.safe_load(REPOS_YML.read_text(encoding="utf-8"))["browsers"]
+    entry = next(b for b in browsers if b["name"] == "Official")
+    return [r.strip() for r in entry["repo"].split(",")]
+
+
+def test_the_fork_is_the_primary_release_repo():
+    """The driver-only path downloads the first repo, so the first repo matters.
+
+    The patch guards assert on behaviour that lives in `additions/juggler/`, and
+    only a browser built from this tree carries it. If upstream were first, the
+    driver-only run would download a browser that is not missing anything -- it
+    would just be a different browser -- and the guards would fail for a reason
+    that has nothing to do with the change under test.
+    """
+    repos = _official_entry()
+
+    assert repos[0] == FORK_REPO, (
+        f"the fetch path installs from {repos[0]!r}, which is not this fork; the "
+        "patch guards assert on additions that only a fork build contains"
+    )
+    assert UPSTREAM_REPO in repos, (
+        "upstream is gone as a fallback, so a fetch would fail whenever the fork "
+        "has nothing published"
+    )
+
+
+def test_the_official_entry_keeps_its_name():
+    """`Official` is the default channel and the installed directory name.
+
+    Renaming it would move every existing install and change what
+    `browsers/official/...` resolves to -- a silent break for anyone who has one.
+    """
+    import yaml
+
+    data = yaml.safe_load(REPOS_YML.read_text(encoding="utf-8"))
+    names = [b["name"] for b in data["browsers"]]
+
+    assert "Official" in names
+    assert data["default"]["browser"] == "Official"
+
+
+def test_the_release_is_neither_draft_nor_prerelease():
+    """Both flags would make the fetch path unable to install the release.
+
+    A draft is invisible to the releases API to anyone without a token, and the
+    fetch job has no token of its own. `prerelease: true` additionally drops the
+    release out of the `stable` channel, which is the one `official/stable`
+    follows -- so the fetch would pick nothing. Either way the workflow would
+    publish a release CI can never test against.
+    """
+    import yaml
+
+    steps = yaml.safe_load(BUILD_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["release"]["steps"]
+    publish = next(s for s in steps if s.get("uses", "").startswith("softprops/action-gh-release"))
+    config = publish["with"]
+
+    assert config.get("draft") is False, "a draft release is invisible to an unauthenticated fetch"
+    assert config.get("prerelease") is False, (
+        "a prerelease is not on the stable channel, so `official/stable` would not find it"
+    )
+
+
+def test_the_build_workflow_verifies_the_tag_and_the_assets():
+    """The tag carries the version and build; the assets have to match the pattern.
+
+    `repos.yml` matches assets by name and reads version and build out of the tag.
+    A tag missing either part, or an asset named any other way, publishes a
+    release that downloads by hand and is invisible to `camoufox fetch`. The
+    workflow has to catch that before it publishes, not after someone notices the
+    install does nothing.
+    """
+    import yaml
+
+    steps = yaml.safe_load(BUILD_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["release"]["steps"]
+    scripts = "\n".join(s["run"] for s in steps if "run" in s)
+    # Quotes around the expansions vary with how the script was written; the
+    # pattern is what has to survive.
+    normalized = scripts.replace('"', "")
+
+    assert "camoufox-$version-$build-*.zip" in normalized, (
+        "the release job no longer checks asset names against the pattern the fetcher matches on"
+    )
+    assert "upstream.sh" in scripts, (
+        "the release job no longer checks the tag against the Firefox generation "
+        "upstream.sh pins, which `ci.versions --check-fetched` requires"
+    )
+    assert "camoufox-$version-$build-lin.x86_64.zip" in normalized, (
+        "nothing insists the Linux asset exists before publishing. The release job "
+        "tolerates a failed platform, so without this a run that lost the Linux "
+        "build would publish a release CI cannot use"
+    )
+
+
+def test_the_release_job_checks_visibility_without_a_token():
+    """Trusting the publish step is how a release ends up invisible to CI.
+
+    The check has to ask the same anonymous endpoint the fetcher asks. A token in
+    that request would defeat the point, since the fetch path does not always
+    have one.
+    """
+    import yaml
+
+    steps = yaml.safe_load(BUILD_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["release"]["steps"]
+    visibility = [s for s in steps if s.get("name", "").startswith("Check the release is visible")]
+
+    assert visibility, "nothing verifies the published release is readable without a token"
+    script = visibility[0]["run"]
+
+    assert "api.github.com/repos/" in script and "/releases/tags/" in script
+    assert "Authorization" not in script, (
+        "the visibility check authenticates, so it cannot prove the unauthenticated "
+        "fetch path will see the release"
+    )

@@ -5,8 +5,17 @@ default:
 
 # Browser repositories
 browsers:
-  # Fallback to camoufox org
-  - repo: daijro/camoufox, camoufox/camoufox
+  # The fork is primary: its releases are built from this tree, so they are the
+  # only ones carrying the Juggler input-dispatch and fingerprint patches the
+  # patch guards assert on. Upstream stays as the fallback for a version the
+  # fork has not published yet, which is what lets a Firefox bump land here
+  # before a fork build exists.
+  #
+  # The name stays `Official` on purpose. It is the default channel
+  # (`official/stable`), and `get_repo_name()` derives the install directory
+  # from it, so renaming would move every existing install and change what
+  # `browsers/official/...` resolves to.
+  - repo: mostakimnasim3/camoufox, daijro/camoufox, camoufox/camoufox
     name: Official
     pattern: "{name}-{version}-{build}-{os}.{arch}.zip"
     versions:

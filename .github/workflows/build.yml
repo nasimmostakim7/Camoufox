@@ -124,23 +124,134 @@ jobs:
 
   release:
     needs: build
+    # Runs even if a platform in the matrix failed. CI only needs the
+    # lin.x86_64 asset, and `needs: build` would otherwise let one flaky
+    # cross-compile -- Windows or macOS, neither of which CI fetches -- block
+    # the release that unblocks CI. The step below insists on lin.x86_64 before
+    # publishing, so a run that did not build it still fails without releasing
+    # anything; a partial release is published otherwise, and the fetcher falls
+    # back to upstream on the platforms it is missing (see ci/README.md).
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/') && needs.build.result != 'cancelled' }}
     permissions:
       contents: write
     runs-on: ubuntu-latest
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
+      - name: Check the tag can be fetched
+        # `pythonlib/camoufox/repos.yml` matches assets by name with the pattern
+        # `{name}-{version}-{build}-{os}.{arch}.zip`, and reads the version and
+        # build out of the TAG (`v152.0.4-beta.31` -> version 152.0.4, build
+        # beta.31). A tag missing either part publishes a release that downloads
+        # by hand and is invisible to `camoufox fetch`.
+        #
+        # The version must also stay on the Firefox generation `upstream.sh`
+        # pins: the CI fetch path runs `ci.versions --check-fetched`, which
+        # allows beta drift inside a generation, not a generation apart.
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          case "$tag" in
+            v[0-9]*.[0-9]*.[0-9]*-*)
+              version="${tag#v}"; version="${version%%-*}"
+              build="${tag#v}"; build="${build#*-}"
+              ;;
+            *)
+              echo "::error::tag '$tag' is not v<version>-<build> (like v152.0.4-beta.31)."
+              echo "::error::The fetcher reads version and build out of the tag; without"
+              echo "::error::both parts it cannot match this release's assets."
+              exit 1
+              ;;
+          esac
+
+          pinned="$(sed -n 's/^version=//p' upstream.sh)"
+          [ -n "$pinned" ] || { echo "::error::upstream.sh has no version= line"; exit 1; }
+          if [ "$version" != "$pinned" ]; then
+            echo "::error::tag says Firefox $version but upstream.sh pins $pinned."
+            echo "::error::The CI fetch path checks the generation and would reject this"
+            echo "::error::release. Bump upstream.sh first, or tag the pinned generation."
+            exit 1
+          fi
+
+          # Every asset that is not named the expected way is silently skipped by
+          # the fetcher, so the release would look published and install nothing.
+          shopt -s nullglob
+          assets=(artifacts/*/*.zip artifacts/*.zip)
+          [ "${#assets[@]}" -gt 0 ] || { echo "::error::no .zip assets were built"; exit 1; }
+          for asset in "${assets[@]}"; do
+            file="$(basename "$asset")"
+            case "$file" in
+              camoufox-"$version"-"$build"-*.zip) ;;
+              *)
+                echo "::error::asset '$file' does not match"
+                echo "::error::camoufox-$version-$build-<os>.<arch>.zip"
+                exit 1
+                ;;
+            esac
+          done
+
+          # lin.x86_64 is the one asset CI fetches, and the release job tolerates a
+          # failed platform in the matrix. Without this, a run that lost the Linux
+          # job would publish a release that unblocks nothing, which is worse than
+          # no release: the failure would resurface as "fetched an old browser and
+          # the patch guards failed", far from the build that caused it.
+          printf '%s\n' "${assets[@]}" | xargs -n1 basename \
+            | grep -qx "camoufox-$version-$build-lin.x86_64.zip" \
+            || { echo "::error::no camoufox-$version-$build-lin.x86_64.zip was built,"; \
+                 echo "::error::and that is the asset CI fetches. Not releasing."; exit 1; }
+
+          echo "tag $tag -> $version ($build), ${#assets[@]} assets"
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
         with:
           files: artifacts/**/*
           generate_release_notes: true
-          draft: true
-          prerelease: true
+          # Neither draft nor prerelease. A draft is invisible to the releases API
+          # to anyone without a token, and the fetch path runs unauthenticated in
+          # some workflows, so it would find nothing and fail the generation
+          # check. `prerelease: true` would additionally drop the release out of
+          # the `stable` channel, which is the one `official/stable` follows. The
+          # beta in the tag already says what this is.
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check the release is visible without a token
+        # Closed here rather than trusted: the fetch path is sometimes
+        # unauthenticated, and a release it cannot see is one CI cannot test
+        # against. This asks the anonymous endpoint the fetcher asks, then applies
+        # the pattern the fetcher matches on.
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"; version="${version%%-*}"
+          build="${tag#v}"; build="${build#*-}"
+          wanted="camoufox-$version-$build-lin.x86_64.zip"
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/$tag"
+
+          for attempt in 1 2 3 4 5; do
+            names="$(curl -sS -H 'Accept: application/vnd.github+json' "$api" \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); print("\n".join(a.get("name","") for a in d.get("assets",[])))' \
+              2>/dev/null || true)"
+            if printf '%s\n' "$names" | grep -qx "$wanted"; then
+              echo "visible: $tag publishes $wanted"
+              exit 0
+            fi
+            sleep $((attempt * 10))
+          done
+          echo "::error::$tag is not visible to an unauthenticated release lookup,"
+          echo "::error::or it has no $wanted asset. Either way 'camoufox fetch'"
+          echo "::error::cannot install it."
+          exit 1
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
