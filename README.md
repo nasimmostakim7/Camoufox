@@ -832,7 +832,17 @@ camoufox audit run --target https://example.com/ --i-am-authorized \
 # Climb further, rotating one proxy per visit
 camoufox audit run --target https://example.com/ --i-am-authorized \
     --max-level 5 --proxy-file proxies.txt --out ./audit
+
+# Repeat one rung on its own: only L5, visitor count pinned to 100
+camoufox audit run --target https://example.com/ --i-am-authorized \
+    --single-level 5 --proxy-file proxies.txt
 ```
+
+A ladder run attributes the defense to the rung that first holds. `--single-level N`
+instead runs just rung N, for when you already know which posture you care about and
+want to repeat that one measurement; the count is pinned to 100 so two such runs
+compare directly, and the report states that a single rung cannot attribute a
+defense.
 
 Visitors do not arrive at once and do not arrive on a fixed interval: arrival times
 are sampled from a distribution (a day curve by default) with random jitter, so the

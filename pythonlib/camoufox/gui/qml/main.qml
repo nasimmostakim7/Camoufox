@@ -1471,6 +1471,7 @@ ApplicationWindow {
                                             Input {
                                                 Layout.fillWidth: true
                                                 text: auditBackend.visitors
+                                                enabled: !auditBackend.singleLevelMode
                                                 input.validator: IntValidator { bottom: 0; top: 1000000 }
                                                 onEditingFinished: if (text.length) auditBackend.setVisitors(parseInt(text))
                                             }
@@ -1496,7 +1497,17 @@ ApplicationWindow {
                                                 Layout.fillWidth: true
                                                 model: ["0 - Naive HTTP", "1 - Headless", "2 - Headers", "3 - Fingerprint", "4 - Proxy rotation", "5 - Behavior", "6 - Persistent"]
                                                 currentIndex: auditBackend.maxLevel
+                                                enabled: !auditBackend.singleLevelMode
                                                 onActivated: auditBackend.setMaxLevel(currentIndex)
+                                            }
+
+                                            Muted { text: "Single level" }
+                                            Combo {
+                                                Layout.fillWidth: true
+                                                model: ["0 - Naive HTTP", "1 - Headless", "2 - Headers", "3 - Fingerprint", "4 - Proxy rotation", "5 - Behavior", "6 - Persistent"]
+                                                currentIndex: auditBackend.singleLevel
+                                                enabled: auditBackend.singleLevelMode
+                                                onActivated: auditBackend.setSingleLevel(currentIndex)
                                             }
 
                                             Muted { text: "Seed (optional)" }
@@ -1719,6 +1730,25 @@ ApplicationWindow {
                                                 Component.onCompleted: text = auditBackend.outDir
                                                 onTextChanged: auditBackend.setOutDir(text)
                                             }
+                                        }
+
+                                        CheckBox {
+                                            Layout.leftMargin: s3
+                                            text: "Single-level mode (run one rung, skip L0 up to it)"
+                                            checked: auditBackend.singleLevelMode
+                                            onToggled: auditBackend.setSingleLevelMode(checked)
+                                        }
+
+                                        Muted {
+                                            Layout.leftMargin: s3
+                                            Layout.fillWidth: true
+                                            wrapMode: Text.WordWrap
+                                            text: "Off (default): the ladder runs from L0 up to the max "
+                                                  + "level, which is what attributes a verdict to the control "
+                                                  + "that holds. On: only the selected rung runs, with the "
+                                                  + "visitor count pinned to 100 so repeat runs at that rung "
+                                                  + "are comparable. A single rung cannot attribute a defense - "
+                                                  + "the report says so."
                                         }
 
                                         CheckBox {

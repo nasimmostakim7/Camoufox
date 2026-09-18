@@ -56,7 +56,29 @@ def build_findings(report: AuditReport) -> List[str]:
     effective = report.first_effective_level()
     bypassing = report.highest_bypassing_level()
 
-    if effective is None:
+    if report.config.single_level_mode:
+        # One rung on its own has nothing below it to compare against, so the
+        # report describes a posture rather than naming the control that holds.
+        # Say that outright: "first holding rung" is the line an operator reads
+        # first, and it means something different with a ladder of one.
+        rung = levels_seen[0]
+        findings.append(
+            f"Single-rung run: only {rung.level.name} was tested, so this measures "
+            f"one posture and cannot attribute a defense. Run the ladder from L0 to "
+            f"find which control is doing the work."
+        )
+        if rung.detection_rate >= 0.5:
+            findings.append(
+                f"{rung.level.name} was stopped on {rung.detection_rate:.0%} of "
+                f"visits. {rung.level.isolates}"
+            )
+        else:
+            findings.append(
+                f"{rung.level.name} got through on {rung.bypass_rate:.0%} of visits. "
+                f"No cheaper rung ran, so this does not show whether a plainer "
+                f"posture would also have got through."
+            )
+    elif effective is None:
         findings.append(
             "No rung of the ladder was reliably stopped. As tested, the defenses did "
             "not distinguish between a plain HTTP client and a fully masked, "
@@ -68,7 +90,7 @@ def build_findings(report: AuditReport) -> List[str]:
             f"({effective.detection_rate:.0%} of visits stopped there). {effective.level.isolates}"
         )
 
-    if effective is not None and effective.level.id > 0:
+    if effective is not None and effective.level.id > 0 and not report.config.single_level_mode:
         earlier = [lr for lr in levels_seen if lr.level.id < effective.level.id]
         dead = [lr for lr in earlier if lr.bypass_rate >= 0.9]
         if dead:
@@ -79,7 +101,7 @@ def build_findings(report: AuditReport) -> List[str]:
                 f"{effective.level.name}."
             )
 
-    if bypassing is not None:
+    if bypassing is not None and not report.config.single_level_mode:
         findings.append(
             f"{bypassing.level.name} reached the site cleanly on "
             f"{bypassing.bypass_rate:.0%} of visits. Whatever is configured at or "
@@ -141,6 +163,12 @@ def render_text(report: AuditReport) -> str:
     add(f"Scope       : {report.config.scope.describe()}")
     add(f"Visitors    : {report.config.visitor_count} over {report.config.duration_hours:g}h "
         f"({report.config.pattern})")
+    if report.config.single_level_mode:
+        rung = report.config.selected_levels()[0]
+        add(f"Mode        : single rung ({rung.name})")
+    else:
+        selected = report.config.selected_levels()
+        add(f"Mode        : ladder, L{selected[0].id}-L{selected[-1].id}")
     add(f"Duration    : {report.finished_at - report.started_at:.1f}s")
     add(f"Requests    : {report.total_requests}")
     add("")
@@ -153,7 +181,7 @@ def render_text(report: AuditReport) -> str:
     add("")
 
     add("-" * 72)
-    add("EVASION LADDER")
+    add("EVASION LADDER" if not report.config.single_level_mode else "SINGLE RUNG")
     add("-" * 72)
     add(f"  {'level':<28} {'visits':>7} {'allowed':>8} {'detected':>9}  verdict mix")
     for lr in report.levels:
@@ -262,6 +290,25 @@ def render_html(report: AuditReport) -> str:
         )
     effective = report.first_effective_level()
     bypassing = report.highest_bypassing_level()
+    # In single-rung mode the row an operator needs is the rung that was run,
+    # whether or not the defenses held there. `effective` is None when the rung
+    # got through, so reusing it would print "none held" under a heading that
+    # says "Rung tested", hiding the one result the run produced.
+    if report.config.single_level_mode:
+        tested = report.config.selected_levels()[0]
+        single_row = (
+            f"<dt>Rung tested</dt><dd>{esc(tested.name)}</dd>"
+            f"<dt>Outcome</dt><dd>"
+            f"{'stopped' if (effective and effective.level.id == tested.id) else 'allowed'}"
+            f"</dd>"
+        )
+    else:
+        single_row = (
+            f"<dt>First holding rung</dt>"
+            f"<dd>{esc(effective.level.name) if effective else 'none held'}</dd>"
+            f"<dt>Highest rung that got through</dt>"
+            f"<dd>{esc(bypassing.level.name) if bypassing else 'none got through'}</dd>"
+        )
 
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -296,17 +343,17 @@ def render_html(report: AuditReport) -> str:
 <div class="card"><dl class="kv">
  <dt>Authorized scope</dt><dd>{esc(report.config.scope.describe())}</dd>
  <dt>Visitors scheduled</dt><dd>{report.config.visitor_count} over {report.config.duration_hours:g}h ({esc(report.config.pattern)})</dd>
+ <dt>Mode</dt><dd>{("single rung, " + esc(report.config.selected_levels()[0].name)) if report.config.single_level_mode else "evasion ladder"}</dd>
  <dt>Visits completed</dt><dd>{report.total_visits}</dd>
  <dt>Requests sent</dt><dd>{report.total_requests}</dd>
  <dt>Wall duration</dt><dd>{report.finished_at - report.started_at:.1f}s</dd>
- <dt>First holding rung</dt><dd>{esc(effective.level.name) if effective else 'none held'}</dd>
- <dt>Highest rung that got through</dt><dd>{esc(bypassing.level.name) if bypassing else 'none got through'}</dd>
+ {single_row}
 </dl></div>
 
 <h2>Findings</h2>
 <div class="card"><ul>{"".join(f"<li>{esc(f)}</li>" for f in findings)}</ul></div>
 
-<h2>Evasion ladder</h2>
+<h2>{"Rung tested" if report.config.single_level_mode else "Evasion ladder"}</h2>
 <table><thead><tr>
  <th>Level</th><th class="n">Visits</th><th class="n">Bypass</th>
  <th class="n">Detected</th><th>Outcomes</th><th>Products seen</th>

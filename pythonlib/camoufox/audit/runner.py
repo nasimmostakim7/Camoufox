@@ -104,6 +104,7 @@ class AuditRunner:
         self._no_proxy_noted = False
         self._headless_override_noted = False
         self._persistence_noted = False
+        self._single_level_noted = False
         self._rotator = None
         if config.proxy:
             from ..proxy import build_rotator
@@ -208,6 +209,20 @@ class AuditRunner:
                 "the audit reuses one browser across visitors and gives each a fresh "
                 "context, so no profile persists. The rung ran, but the "
                 "returning-visitor signal it names was not exercised."
+            ),
+        )
+
+    def _note_single_level(self, level: EvasionLevel) -> None:
+        if self._single_level_noted:
+            return
+        self._single_level_noted = True
+        self._progress(
+            event="notice",
+            message=(
+                f"Single-rung mode: only {level.name} will run, with the visitor "
+                f"count pinned to {self.config.visitor_count} so repeat runs are "
+                "comparable. No cheaper rung is included, so the report measures "
+                "this one posture rather than attributing the defense to a control."
             ),
         )
 
@@ -741,6 +756,9 @@ class AuditRunner:
 
         schedule = build_schedule(self.config.schedule_config(), self._rng)
         report.schedule_warnings = list(schedule.warnings)
+
+        if self.config.single_level_mode:
+            self._note_single_level(self.config.selected_levels()[0])
 
         for level in self.config.selected_levels():
             if self._cancelled():

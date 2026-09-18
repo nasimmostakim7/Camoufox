@@ -34,7 +34,14 @@ replay credentials. Detecting that a challenge was issued is the finding; solvin
 it would defeat the defense under test and blind the operator to it.
 """
 
-from .config import AuditConfig, AuditReport, LevelResult, SafetyLimits, VisitResult
+from .config import (
+    SINGLE_LEVEL_VISITORS,
+    AuditConfig,
+    AuditReport,
+    LevelResult,
+    SafetyLimits,
+    VisitResult,
+)
 from .detection import Verdict, WafDetection, classify_response, detect_vendor
 from .evasion import (
     CAPABILITIES,
@@ -56,6 +63,7 @@ __all__ = [
     "VisitResult",
     "LevelResult",
     "AuditReport",
+    "SINGLE_LEVEL_VISITORS",
     # scope
     "TargetScope",
     "ScopeViolation",

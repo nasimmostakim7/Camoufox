@@ -24,7 +24,17 @@ __all__ = [
     "VisitResult",
     "LevelResult",
     "AuditReport",
+    "SINGLE_LEVEL_VISITORS",
 ]
+
+#: The visitor count a single-rung run always uses.
+#:
+#: Single-level mode is a repeat-run preset: the operator already knows which
+#: rung they are watching, so the run is pinned to one posture at a fixed sample
+#: size instead of inheriting a ladder's per-rung count. Fixing it here rather
+#: than defaulting it means two single-rung runs are directly comparable, which is
+#: the only reason to run one.
+SINGLE_LEVEL_VISITORS = 100
 
 
 @dataclass
@@ -109,7 +119,34 @@ class AuditConfig:
     #: silently credited to a posture that was not actually used.
     headless: Optional[bool] = None
 
+    #: Run one rung on its own instead of climbing the ladder from L0.
+    #:
+    #: The ladder exists for attribution: every rung runs so the first one that
+    #: holds names the control doing the work. That is the right shape for a first
+    #: look and the wrong one for a repeat run, where the operator already knows
+    #: which rung they care about and does not want to spend traffic on the rungs
+    #: below it. With this True, `single_level` picks the rung and nothing else
+    #: runs -- 100 visitors at L5 means 100 visitors at L5, not 100 at each of
+    #: L0..L5.
+    #:
+    #: A single-rung run cannot attribute anything: with nothing below it to
+    #: compare against, its report describes one posture rather than naming the
+    #: defense that holds. The report says so rather than letting the absence of a
+    #: ladder be read as a finding about one.
+    single_level_mode: bool = False
+    #: The rung to run when single_level_mode is True. Ignored otherwise.
+    single_level: int = 0
+
+    def __post_init__(self) -> None:
+        if self.single_level_mode:
+            # Pinned rather than defaulted: a single-rung run exists to be
+            # repeated and compared, and a caller-supplied count (or a ladder's
+            # per-rung count) would make two such runs incomparable.
+            self.visitor_count = SINGLE_LEVEL_VISITORS
+
     def selected_levels(self) -> List[EvasionLevel]:
+        if self.single_level_mode:
+            return [level_by_id(self.single_level)]
         if self.levels:
             return [level_by_id(i) for i in self.levels]
         return levels_up_to(self.max_evasion_level)
@@ -148,6 +185,17 @@ class AuditConfig:
             problems.append("duration_hours must be positive")
         if self.max_evasion_level < 0 or self.max_evasion_level > 6:
             problems.append("max_evasion_level must be between 0 and 6")
+        if self.single_level < 0 or self.single_level > 6:
+            problems.append("single_level must be between 0 and 6")
+        if self.single_level_mode and self.levels:
+            # Both name the rungs to run, so accepting both would mean silently
+            # dropping one. Refuse instead: an operator who passed both meant one
+            # of them, and only they know which.
+            problems.append(
+                f"single_level_mode is on, so levels={list(self.levels)} cannot also "
+                f"be given; pass one or the other. Remove levels to run only "
+                f"L{self.single_level}."
+            )
         if self.visitor_count > self.limits.max_requests > 0:
             problems.append(
                 f"visitor_count ({self.visitor_count}) exceeds max_requests "
@@ -161,6 +209,8 @@ class AuditConfig:
             "scope": self.scope.to_dict(),
             "max_evasion_level": self.max_evasion_level,
             "levels": self.levels,
+            "single_level_mode": self.single_level_mode,
+            "single_level": self.single_level,
             "visitor_count": self.visitor_count,
             "duration_hours": self.duration_hours,
             "pattern": self.pattern,

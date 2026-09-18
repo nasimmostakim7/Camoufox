@@ -81,6 +81,8 @@ class AuditSession:
     seed: Optional[int]
     #: The rungs actually run, after a missing browser or pool pruned some.
     levels: List[int] = field(default_factory=list)
+    #: True when the request asked for one rung rather than the ladder.
+    single_level_mode: bool = False
     #: Redacted description of the pool, or None. Never carries a password.
     proxy_summary: Optional[Dict[str, Any]] = None
     status: str = "running"  # running | done | failed | cancelled
@@ -115,6 +117,7 @@ class AuditSession:
                 "duration_hours": self.duration_hours,
                 "max_level": self.max_level,
                 "levels": self.levels,
+                "single_level_mode": self.single_level_mode,
                 "proxy": self.proxy_summary,
                 "started_at": self.started_at,
                 "finished_at": self.finished_at,
@@ -266,12 +269,14 @@ class AuditService:
         max_level: int,
         seed: Optional[int],
         extra_headers: Optional[Dict[str, str]] = None,
+        single_level: Optional[int] = None,
     ) -> AuditSession:
         host = self.authorize(target_url)
 
         visitor_count = max(1, min(int(visitor_count), MAX_VISITORS))
         max_level = max(0, min(int(max_level), MAX_LEVELS))
         duration_hours = max(0.001, float(duration_hours))
+        single_level_mode = single_level is not None
 
         notices: List[str] = []
 
@@ -284,9 +289,27 @@ class AuditService:
             )
 
         pool = self.proxies.get()
-        requested_levels = list(range(0, max_level + 1))
+        if single_level_mode:
+            requested_levels = [max(0, min(int(single_level), MAX_LEVELS))]
+        else:
+            requested_levels = list(range(0, max_level + 1))
         selected = [i for i in requested_levels if pool is not None or i not in ROTATION_LEVEL_IDS]
         dropped = [i for i in requested_levels if i not in selected]
+        if single_level_mode and not selected:
+            # The one rung that was asked for is exactly the one that cannot run
+            # here. Silently returning a session with no levels would look like a
+            # clean result; refuse instead, and name the rung as clamped, since
+            # that is what will appear in the report.
+            raise TargetNotAllowed(
+                f"L{requested_levels[0]} is defined by a rotating exit IP and no proxy "
+                f"pool is configured, so this console cannot run it. Add a pool, or "
+                f"pick another rung."
+            )
+        if single_level_mode and not available and requested_levels[0] > 0:
+            raise TargetNotAllowed(
+                f"L{requested_levels[0]} needs the browser, which is not installed on "
+                f"this host. Only L0 can run here."
+            )
         if dropped:
             # L4+ are defined by a rotating exit IP. Running them with no pool
             # would measure this host's own IP while the report still said
@@ -308,7 +331,12 @@ class AuditService:
         config = AuditConfig(
             target_url=target_url,
             scope=scope,
-            levels=selected,
+            # In single-rung mode the engine derives the rung from `single_level`;
+            # passing `levels` too would be two sources for the same decision, and
+            # validate() rejects that rather than pick one silently.
+            levels=None if single_level_mode else selected,
+            single_level_mode=single_level_mode,
+            single_level=requested_levels[0],
             visitor_count=visitor_count,
             duration_hours=duration_hours,
             cooldown_between_levels_s=0.0,
@@ -330,10 +358,11 @@ class AuditService:
         session = AuditSession(
             id=uuid.uuid4().hex[:12],
             target_url=target_url,
-            visitor_count=visitor_count,
+            visitor_count=config.visitor_count,
             duration_hours=duration_hours,
             max_level=max(requested_levels, default=0),
             levels=selected,
+            single_level_mode=single_level_mode,
             proxy_summary=pool.summary() if pool is not None else None,
             seed=seed,
         )

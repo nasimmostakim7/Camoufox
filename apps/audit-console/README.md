@@ -99,6 +99,13 @@ Each rung is a client posture, and each says what it isolates over the one below
 A rung that reaches the site cleanly tells you the defenses do not filter at or
 below it. The *first* rung that gets stopped is the one worth reading.
 
+That reading only exists relative to the rungs below it, so the console also
+offers **Single rung only**: run just the selected rung, with the visitor count
+pinned to 100, to repeat one measurement and compare it over time. A single-rung
+run says in its own findings that it cannot attribute a defense. Asking for one
+rung the host cannot reach — L4+ with no pool, or L1+ with no browser — is
+refused rather than pruned to nothing.
+
 Levels 1 and up launch a real Camoufox. On a host with no browser and no
 `camoufox` package installed — the normal state for the hosted build — the console
 caps the ladder at L0 and records a notice saying so, rather than accepting a

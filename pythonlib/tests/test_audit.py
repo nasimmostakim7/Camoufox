@@ -22,15 +22,19 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from camoufox.audit import (  # noqa: E402
+    SINGLE_LEVEL_VISITORS,
     AuditConfig,
+    AuditReport,
     AuditRunner,
     AuthorizationRequired,
     CAPABILITIES,
     EVASION_LEVELS,
+    LevelResult,
     SafetyLimits,
     ScopeViolation,
     TargetScope,
     Verdict,
+    VisitResult,
     build_schedule,
     classify_response,
     ladder_problems,
@@ -117,6 +121,12 @@ def _config(url, **overrides):
         seed=1,
     )
     params.update(overrides)
+    # The two ways of naming rungs are mutually exclusive, and `levels=[0]` is
+    # only here to keep an ordinary ladder test cheap. A single-rung config must
+    # not inherit it, or every such test would fail validation instead of testing
+    # what it meant to.
+    if params.get("single_level_mode") and "levels" not in overrides:
+        params["levels"] = None
     return AuditConfig(**params)
 
 
@@ -858,6 +868,177 @@ def test_no_override_notice_when_the_rung_agrees_with_the_setting(waf_server, mo
     runner._launch_options(level_by_id(1))
     notices = [e for e in events if e.get("event") == "notice"]
     assert not any("forced every rung" in n.get("message", "") for n in notices), notices
+
+
+# --------------------------------------------------------------------------
+# Single-level mode: one rung, a pinned count, and no false attribution
+# --------------------------------------------------------------------------
+
+
+def test_single_level_mode_runs_only_the_selected_rung(waf_server, monkeypatch):
+    """L0 alone, with no L0..L4 preamble: one rung means one rung."""
+    seen = []
+
+    async def capture(self, level, schedule):
+        seen.append(level.id)
+        return LevelResult(level=level)
+
+    monkeypatch.setattr(AuditRunner, "_run_level", capture)
+    asyncio.run(
+        AuditRunner(_config(waf_server, single_level_mode=True, single_level=0)).run()
+    )
+    assert seen == [0]
+
+
+def test_single_level_mode_selects_a_browser_rung_without_a_preamble(waf_server):
+    """
+    A deeper rung is selected directly, with no cheaper rung planned.
+
+    Asserted on the selection rather than by running it: CI never fetches a
+    browser, so driving L5 would report a launch failure for the rung instead of
+    proving which rungs were chosen.
+    """
+    config = _config(waf_server, single_level_mode=True, single_level=5)
+    assert [level.id for level in config.selected_levels()] == [5]
+
+
+def test_single_level_mode_pins_the_visitor_count(waf_server):
+    """The count is 100 regardless of what the caller passed, so runs compare."""
+    config = _config(waf_server, single_level_mode=True, single_level=0, visitor_count=7)
+    assert config.visitor_count == SINGLE_LEVEL_VISITORS == 100
+    # Asserted on the schedule the run would use: driving 100 visitors takes 100s
+    # on the min-gap floor, and the count is decided before any traffic moves.
+    assert build_schedule(config.schedule_config()).count == 100
+
+
+def test_single_level_mode_needs_no_level_list(waf_server):
+    """The rung comes from `single_level`, and `levels` is not consulted."""
+    config = _config(waf_server, single_level_mode=True, single_level=2, levels=None)
+    assert [level.id for level in config.selected_levels()] == [2]
+
+
+def test_single_level_mode_rejects_a_competing_level_list(waf_server):
+    """Two sources for the same decision is a config error, not a silent pick."""
+    problems = _config(
+        waf_server, single_level_mode=True, single_level=2, levels=[0, 1]
+    ).validate()
+    assert any("cannot also" in p for p in problems), problems
+
+
+def test_single_level_mode_rejects_an_out_of_range_rung(waf_server):
+    problems = _config(waf_server, single_level_mode=True, single_level=7).validate()
+    assert any("single_level must be between 0 and 6" in p for p in problems), problems
+
+
+def _visit(level_id, verdict, index):
+    return VisitResult(
+        visitor_index=index, level_id=level_id, started_at=0.0, verdict=verdict
+    )
+
+
+def _report(url, levels, single_level_mode=False, single_level=0, holds_at=None):
+    """
+    A report with a chosen shape, built without running any traffic.
+
+    Pins the wording tests to the shape of the ladder and the verdicts rather
+    than the clock: a real run costs one second per visitor on the min-gap floor,
+    and these tests are about the sentence. `holds_at` picks the rung the defenses
+    stop, so the attribution branch has something to attribute.
+    """
+    config = _config(
+        url,
+        single_level_mode=single_level_mode,
+        single_level=single_level,
+        # single_level_mode and levels are mutually exclusive by design, so a
+        # single-rung config must not also carry a level list.
+        levels=None if single_level_mode else levels,
+    )
+    results = []
+    for level_id in levels:
+        rung = level_by_id(level_id)
+        verdict = (
+            Verdict.BLOCKED if holds_at is not None and level_id >= holds_at else Verdict.ALLOWED
+        )
+        visits = [_visit(level_id, verdict, i) for i in range(4)]
+        results.append(LevelResult(level=rung, visits=visits, scheduled=len(visits)))
+    return AuditReport(config=config, levels=results)
+
+
+def test_single_level_run_says_it_cannot_attribute(waf_server):
+    """
+    A ladder of one cannot name the control doing the work.
+
+    The report's usual headline is "the defenses first hold at Lx", which is a
+    claim about a rung *relative to the ones below it*. With none below it, the
+    same sentence would be read as an attribution it cannot support.
+    """
+    report = _report(waf_server, [0], single_level_mode=True, single_level=0)
+    findings = " ".join(build_findings(report))
+    assert "Single-rung run" in findings
+    assert "cannot attribute" in findings
+    assert "first hold at" not in findings
+
+
+def test_single_level_run_announces_the_mode(waf_server, monkeypatch):
+    """
+    The mode notice is emitted by a real run, without driving a real rung.
+
+    `_run_level` is stubbed because a 100-visitor rung costs 100s on the min-gap
+    floor; the notice is emitted before any traffic and is what this asserts.
+    """
+    events = []
+
+    async def no_traffic(self, level, schedule):
+        return LevelResult(level=level)
+
+    monkeypatch.setattr(AuditRunner, "_run_level", no_traffic)
+    runner = AuditRunner(
+        _config(waf_server, single_level_mode=True, single_level=2),
+        on_progress=events.append,
+    )
+    asyncio.run(runner.run())
+    notices = [e.get("message", "") for e in events if e.get("event") == "notice"]
+    assert any("Single-rung mode" in n and "L2" in n for n in notices), notices
+    assert any(str(SINGLE_LEVEL_VISITORS) in n for n in notices), notices
+
+
+def test_full_ladder_report_still_attributes(waf_server):
+    """The single-rung wording must not leak into an ordinary ladder run."""
+    findings = " ".join(build_findings(_report(waf_server, [0, 1, 2], holds_at=2)))
+    assert "Single-rung run" not in findings
+    assert "first hold at" in findings
+
+
+def test_single_level_mode_is_serialized(waf_server):
+    """A saved profile has to carry the mode, or reloading silently changes it."""
+    data = _config(waf_server, single_level_mode=True, single_level=4).to_dict()
+    assert data["single_level_mode"] is True
+    assert data["single_level"] == 4
+    assert data["visitor_count"] == SINGLE_LEVEL_VISITORS
+
+
+def test_single_level_text_report_names_the_mode(waf_server):
+    text = render_text(_report(waf_server, [0], single_level_mode=True, single_level=0))
+    assert "SINGLE RUNG" in text
+    assert "EVASION LADDER" not in text
+
+
+def test_single_level_html_report_names_the_rung_it_ran(waf_server):
+    """
+    The summary row must show the rung that ran, not "none held".
+
+    A rung that got through has no holding rung, so reusing that field would
+    print "none held" under a "Rung tested" heading and hide the only result the
+    run produced.
+    """
+    allowed = render_html(_report(waf_server, [0], single_level_mode=True, single_level=0))
+    assert "<dt>Outcome</dt><dd>allowed</dd>" in allowed
+    assert "none held" not in allowed
+
+    stopped = render_html(
+        _report(waf_server, [0], single_level_mode=True, single_level=0, holds_at=0)
+    )
+    assert "<dt>Outcome</dt><dd>stopped</dd>" in stopped
 
 
 # --------------------------------------------------------------------------

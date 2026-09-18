@@ -107,7 +107,7 @@ language_tags), so the Qt filter belongs in the spec alone.
   Pdf and the qmlls/designer/linguist tools all go.
 - **The gate is `--self-check`**, run under `QT_QPA_PLATFORM=offscreen`, which
   loads the real QML and asserts the audit bindings resolve. Compare its output
-  to a baseline build's: "self-check OK: ... 59 audit bindings resolved" must be
+  to a baseline build's: "self-check OK: ... 64 audit bindings resolved" must be
   byte-identical, not merely exit 0.
 
 Measured on this fork: 907 MB -> 517 MB (-43%) with the trim, self-check

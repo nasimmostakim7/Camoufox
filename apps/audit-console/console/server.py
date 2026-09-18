@@ -198,6 +198,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                 duration_hours=body.get("duration_hours", 0.02),
                 max_level=body.get("max_level", 2),
                 seed=body.get("seed"),
+                single_level=body.get("single_level"),
             )
         except TargetNotAllowed as exc:
             return self._send(*_json_bytes({"error": str(exc)}, 403))
