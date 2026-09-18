@@ -222,10 +222,18 @@ jobs:
           # job would publish a release that unblocks nothing, which is worse than
           # no release: the failure would resurface as "fetched an old browser and
           # the patch guards failed", far from the build that caused it.
-          printf '%s\n' "${assets[@]}" | xargs -n1 basename \
-            | grep -qx "camoufox-$version-$build-lin.x86_64.zip" \
-            || { echo "::error::no camoufox-$version-$build-lin.x86_64.zip was built,"; \
-                 echo "::error::and that is the asset CI fetches. Not releasing."; exit 1; }
+          # Deliberately a loop rather than `... | grep -qx`: under `pipefail`,
+          # grep exits at the first match, the writer upstream gets SIGPIPE, and
+          # the pipeline reports failure on a SUCCESSFUL check. That is exactly
+          # how the first release run died -- every platform had built, the
+          # Linux asset was present, and the job still refused to publish.
+          want="camoufox-$version-$build-lin.x86_64.zip"
+          found=""
+          for asset in "${assets[@]}"; do
+            if [ "$(basename "$asset")" = "$want" ]; then found=1; break; fi
+          done
+          [ -n "$found" ] || { echo "::error::no $want was built,"; \
+               echo "::error::and that is the asset CI fetches. Not releasing."; exit 1; }
 
           echo "tag $tag -> $version ($build), ${#assets[@]} assets"
         env:

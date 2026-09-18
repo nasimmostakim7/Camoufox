@@ -2659,6 +2659,74 @@ def test_the_build_workflow_verifies_the_tag_and_the_assets():
     )
 
 
+def test_the_release_job_can_actually_pass_its_linux_asset_check(tmp_path):
+    """The check must succeed when the asset IS present.
+
+    The first release run built all six platforms, including
+    `camoufox-152.0.4-beta.32-lin.x86_64.zip`, and the job still refused to
+    publish. The check was `printf ... | xargs -n1 basename | grep -qx "$want"`
+    under `set -o pipefail`: grep exits at the first match, xargs takes SIGPIPE,
+    and the pipeline reports failure on a successful check.
+
+    A test that only greps the workflow text cannot catch that, so this runs the
+    step's script for real, with the assets staged that a real run produces.
+    """
+    import os
+    import subprocess
+    import yaml
+
+    steps = yaml.safe_load(BUILD_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["release"]["steps"]
+    check = [s for s in steps if s.get("name", "").startswith("Check the tag can be fetched")]
+    assert check, "the release job no longer checks the tag before publishing"
+
+    version, build = "152.0.4", "beta.32"
+    # `download-artifact` stages each artifact as its own directory under
+    # `artifacts/`; the step globs `artifacts/*/*.zip` and `artifacts/*.zip`.
+    artifacts = tmp_path / "artifacts"
+    for platform in (
+        "lin.x86_64", "lin.arm64", "win.x86_64",
+        "win.i686", "mac.x86_64", "mac.arm64",
+    ):
+        d = artifacts / f"CamoufoxBuilds-{platform}"
+        d.mkdir(parents=True)
+        (d / f"camoufox-{version}-{build}-{platform}.zip").write_text("")
+
+    env = {**os.environ, "GITHUB_REF_NAME": f"v{version}-{build}"}
+    # The step reads `upstream.sh` from the working directory, as checkout
+    # leaves it in a real run.
+    (tmp_path / "upstream.sh").write_text(
+        f"version={version}\nrelease={build}\nclosedsrc_rev=1.0.0\n"
+    )
+    proc = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", check[0]["run"]],
+        cwd=tmp_path, env=env, capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, (
+        "the asset check failed even though every platform, including Linux, was "
+        f"built: {proc.stdout}{proc.stderr}"
+    )
+
+
+def test_the_release_linux_asset_check_is_not_a_pipe_into_grep():
+    """The specific shape that broke: a pipeline into `grep -q` under pipefail."""
+    import yaml
+
+    steps = yaml.safe_load(BUILD_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["release"]["steps"]
+    script = "\n".join(s["run"] for s in steps if "run" in s)
+    offenders = [
+        line.strip()
+        for line in script.splitlines()
+        if "|" in line and "grep -q" in line and line.lstrip().startswith(("printf", "find", "echo", "xargs"))
+    ]
+    # printf/echo/find builtins are safe (they ignore or tolerate SIGPIPE cleanly
+    # here); xargs aborts the pipeline. Keep the assertion narrow so it documents
+    # the real failure rather than banning the pattern everywhere.
+    assert not any("xargs" in line for line in offenders), (
+        "the release job pipes xargs into `grep -q`; under pipefail that fails on "
+        "success. See test_the_release_job_can_actually_pass_its_linux_asset_check"
+    )
+
+
 def test_the_release_job_checks_visibility_without_a_token():
     """Trusting the publish step is how a release ends up invisible to CI.
 
