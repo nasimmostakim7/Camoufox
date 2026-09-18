@@ -34,9 +34,32 @@ process start by `additions/camoucfg/MaskConfig.hpp`).
 4. `make package-linux|macos|windows arch=...` → `scripts/package.py` → release zips
    (`camoufox-{version}-{build}-{os}.{arch}.zip`).
 5. `pythonlib/camoufox/pkgman.py` syncs/fetches those zips from GitHub releases
-   (`pythonlib/camoufox/repos.yml` lists sources).
+   (`pythonlib/camoufox/repos.yml` lists sources, **fork first, upstream behind it**).
 6. `pythonlib/camoufox/utils.py::launch_options()` builds the Playwright launch dict
    + `CAMOU_CONFIG`, then `playwright.firefox.launch()` starts the binary.
+
+## Which release a fetch installs
+
+`repos.yml`'s `Official` entry lists this fork **first**. That order is load-bearing:
+the patch guards (`tests/patches/*.py`) assert on behaviour in `additions/juggler/`,
+and only a browser built from this tree carries it, so a fetch from upstream fails
+those guards for a reason that has nothing to do with the change under test.
+
+Upstream stays behind the fork so a fetch keeps working before the fork has
+published. `list_available_versions()` therefore treats "no version **this platform
+can install**" as a reason to keep walking — an empty release list, a 404, and a
+release built only for another platform are all that case. Stopping at the first
+repo that answers at all would make the fallback unreachable.
+
+To publish: push a `v<version>-<build>` tag (like `v152.0.4-beta.31`) and let
+`.github/workflows/build.yml` run. `<version>` must be the generation `upstream.sh`
+pins — the fetch path runs `ci.versions --check-fetched`, which allows beta drift
+inside a generation, not a generation apart. The release must be neither draft nor
+prerelease: a draft is invisible to the unauthenticated releases API the fetch path
+sometimes uses, and `prerelease` drops it out of the `stable` channel that
+`official/stable` follows. The workflow checks the tag, the asset names, the
+presence of `lin.x86_64` (the only asset CI fetches), and that the release is
+visible without a token. `ci/tests/test_ci.py` locks all of this.
 
 ## Key entry points
 
