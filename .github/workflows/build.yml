@@ -53,17 +53,17 @@ jobs:
           sudo apt-get autoremove -y > /dev/null
           sudo apt-get clean > /dev/null
 
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
       - name: Set up Go
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@v5
         with:
           go-version: "1.23"
 
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -87,6 +87,27 @@ jobs:
           # ccache: the mozconfig enables --with-ccache, but the runner image no
           # longer ships it, so configure fails with "Cannot find ccache".
           sudo apt-get install -y msitools p7zip-full aria2 ccache
+
+      - name: Resolve the pinned browser version
+        id: pinned
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version=//p' upstream.sh)"
+          [ -n "$version" ] || { echo "::error::upstream.sh has no version= line"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Restore ccache
+        # The same key the CI build uses (tests.yml), and for the same reason: a
+        # release cut right after a green CI run should start from a warm cache
+        # instead of recompiling all of libxul. A cold build is over an hour and
+        # is where a release run is most likely to die on a resource limit.
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ steps.pinned.outputs.version }}-${{ hashFiles('patches/**', 'additions/**', 'assets/*.mozconfig') }}
+          restore-keys: |
+            ccache-${{ steps.pinned.outputs.version }}-
+            ccache-
 
       - name: Fetch source
         env:
