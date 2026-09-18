@@ -148,6 +148,25 @@ library is asserted to survive and every unused one to go.
 Fetch upstream with `git fetch upstream`; rebase feature branches onto
 `upstream/main` rather than merging main into a feature branch.
 
+This fork has already moved once: `mostakimnasim3/camoufox` was the original
+home, and GitHub disabled Actions on that account, so nothing could build or
+release from it. `nasimmostakim7/Camoufox` is the current home. If the fork
+moves again, the references to chase are `pythonlib/camoufox/repos.yml`, the two
+packaging scripts that `pip install` the fork by git URL, the two test files
+that pin the primary repo, and this section. The workflows need no edit -- they
+use `github.repository` / `GITHUB_REPOSITORY`.
+
+## CI needs working GitHub Actions on the account, not just on the repo
+
+`GET /repos/{owner}/{repo}/actions/permissions` returning `enabled: true` does
+not mean Actions will run. If the *account* is restricted, every trigger
+silently does nothing: a push to `main` creates no run, the Actions tab shows an
+empty history, and `POST .../dispatches` answers `422 Actions has been disabled
+for this user`. That 422 is account-level and cannot be cleared by editing
+repository settings, re-enabling workflows, or fixing token scopes -- only
+GitHub Support can lift it. Check before planning any work that depends on CI:
+dispatch a workflow, or confirm a real run exists in the Actions tab.
+
 ## Fork feature: proxy rotation
 
 This fork adds per-session exit-IP rotation (`pythonlib/camoufox/proxy.py`).
