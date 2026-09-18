@@ -158,6 +158,11 @@
   }
   .exports a:hover { border-color: var(--accent); color: var(--accent); }
   .err { color: var(--block); font-size: 13px; margin-top: 12px; }
+  label.check {
+    display: flex; align-items: center; gap: 7px; margin-top: 10px;
+    font-size: 13px; color: var(--text); cursor: pointer;
+  }
+  label.check input { width: auto; margin: 0; }
 </style>
 </head>
 <body>
@@ -184,8 +189,12 @@
         </div>
       </div>
 
-      <label for="maxlevel">Highest rung to climb</label>
+      <label for="maxlevel" id="levellabel">Highest rung to climb</label>
       <select id="maxlevel"></select>
+      <label class="check" for="singlelevel">
+        <input id="singlelevel" type="checkbox">
+        Single rung only — run just the selected rung, count pinned to 100
+      </label>
       <div class="hint" id="levelhint"></div>
 
       <details class="proxybox" id="proxybox">

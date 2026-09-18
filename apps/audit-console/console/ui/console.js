@@ -203,6 +203,9 @@ async function start() {
     max_level: Number(el("maxlevel").value),
     seed: el("seed").value === "" ? null : Number(el("seed").value),
   };
+  if (el("singlelevel").checked) {
+    payload.single_level = Number(el("maxlevel").value);
+  }
 
   try {
     const session = await api("/api/audits", {
@@ -237,6 +240,7 @@ async function boot() {
   el("saveproxy").addEventListener("click", saveProxy);
   el("clearproxy").addEventListener("click", clearProxy);
   el("maxlevel").addEventListener("change", renderLevelHint);
+  el("singlelevel").addEventListener("change", renderLevelHint);
   el("proxymode").addEventListener("change", () => {
     const list = el("proxymode").value === "list";
     el("listmode").hidden = !list;
@@ -275,8 +279,25 @@ async function refreshLevels() {
 
 function renderLevelHint() {
   const chosen = Number(el("maxlevel").value);
-  const blocked = LEVELS.filter((l) => l.id <= chosen && !l.reachable);
+  const single = el("singlelevel").checked;
+  el("levellabel").textContent = single ? "Rung to run" : "Highest rung to climb";
+  el("visitors").disabled = single;
+  if (single) el("visitors").value = 100;
+
   const hint = el("levelhint");
+  if (single) {
+    const rung = LEVELS.find((l) => l.id === chosen);
+    // A single-rung run has no rung below it to compare against, so the hint
+    // must not let the operator read the result as an attribution.
+    hint.textContent = rung && !rung.reachable
+      ? (rung.unreachable_reason || "unavailable on this host")
+      : "Only this rung runs. The count is pinned to 100 so repeat runs are " +
+        "comparable, and a single rung cannot attribute the defense to a control.";
+    hint.className = rung && !rung.reachable ? "hint warn" : "hint";
+    return;
+  }
+
+  const blocked = LEVELS.filter((l) => l.id <= chosen && !l.reachable);
   if (!blocked.length) {
     hint.textContent = "";
     hint.className = "hint";

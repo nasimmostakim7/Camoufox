@@ -134,7 +134,7 @@ cat dist/CamoufoxGUI/CamoufoxGUI-selfcheck.log
 A passing run reports how many bindings it resolved:
 
 ```
-self-check OK: QML main.qml, 1 root object(s), 59 audit bindings resolved
+self-check OK: QML main.qml, 1 root object(s), 64 audit bindings resolved
 ```
 
 The names are read out of the QML rather than kept in a list here, because a

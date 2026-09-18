@@ -73,6 +73,8 @@ Useful flags:
 | `--hours H` | Window to spread them across. |
 | `--pattern` | `human_diurnal` (default), `constant`, `ramp`, `spike`, `sustained`. |
 | `--max-level N` | Highest rung to climb, 0-6. |
+| `--level N` | Run exactly these rungs (repeatable). |
+| `--single-level N` | Run only rung N, skipping L0 up to it. Pins `--visitors` to 100. |
 | `--proxy-file` | Text file of proxies, one per line, rotated one per visit. |
 | `--proxy-gateway` | Rotating gateway URL; `{session}` is substituted per visit. |
 | `--max-requests`, `--max-rps`, `--max-concurrency`, `--max-per-minute` | Safety ceilings. |
@@ -95,6 +97,38 @@ visible rather than assumed.
 The `--max-per-minute` ceiling bounds the worst burst, so a random draw cannot
 accidentally turn into a flood.
 
+### Running one rung on its own
+
+By default the audit climbs the ladder from L0 up to `--max-level`, because the
+finding that matters is *which* rung the defenses stop at. That attribution only
+exists relative to the rungs below it: "the defenses first hold at L3" means L3
+was stopped and L0-L2 were not.
+
+`--single-level N` runs only rung N, skipping L0 up to it. Use it when you already
+know which posture you care about and want to repeat one measurement — a specific
+page behind a proxy pool, a change to a WAF rule, the same rung at two points in
+time. The visitor count is pinned to 100 in this mode, not taken from `--visitors`,
+so two single-rung runs are directly comparable.
+
+A single rung has nothing below it to compare against, so the report says so
+rather than printing the usual "first holding rung" line:
+
+```
+camoufox audit run \
+    --target https://example.com/ \
+    --i-am-authorized \
+    --single-level 5 --proxy-file proxies.txt
+```
+
+```
+Single-rung run: only L5 - Human behavior was tested, so this measures one
+posture and cannot attribute a defense. Run the ladder from L0 to find which
+control is doing the work.
+```
+
+`--single-level` cannot be combined with `--level`; both name the rungs to run,
+and passing both is refused rather than silently resolved.
+
 ## The GUI
 
 Launch it with:
@@ -112,7 +146,9 @@ The **Audit** tab has three parts.
 - The authorization checkbox and an optional ticket reference. The Start button
   stays disabled until this is checked.
 - Traffic plan: visitor count, window in hours, arrival pattern, and the maximum
-  evasion level.
+  evasion level. Tick **Single-level mode** to run one rung on its own instead of
+  the ladder, and pick which one; the visitor count is pinned to 100 and the
+  input is disabled, so repeat runs at that rung are comparable.
 - An arrival preview chart showing how the visitors are distributed across the
   window, with the busiest and quietest periods called out.
 - Proxy settings: no proxy, a list file, or a rotating gateway, with a per-proxy

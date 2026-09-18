@@ -417,6 +417,98 @@ def test_rotation_rungs_run_once_a_pool_is_set(console, monkeypatch):
     assert levels["levels"][6]["reachable"] is True
 
 
+# --------------------------------------------------------------------------
+# single-rung mode
+
+
+def test_single_level_runs_one_rung_and_pins_the_count(console):
+    """
+    `single_level` must run that rung alone, at the engine's pinned count.
+
+    Started and cancelled rather than run to completion: the pinned count is 100
+    visitors, and the point here is what was selected and how many it will send,
+    not the verdicts -- a full 100-visitor run costs 100s on the min-gap floor.
+    """
+    status, started = console.post_json(
+        "/api/audits", {"single_level": 0, "max_level": 6, "visitor_count": 4, "duration_hours": 0.002}
+    )
+    assert status == 202, started
+    assert started["levels"] == [0]
+    assert started["single_level_mode"] is True
+    assert started["visitor_count"] == 100
+    console.post_json(f"/api/audits/{started['id']}/cancel")
+
+
+def test_single_level_off_leaves_the_ladder_alone(console):
+    """Omitting `single_level` is the ordinary ladder, unchanged."""
+    session = run_audit(console, max_level=0, visitor_count=2)
+    assert session["single_level_mode"] is False
+    assert session["levels"] == [0]
+    assert session["visitor_count"] == 2
+
+
+def test_single_level_refuses_a_rung_it_cannot_reach(console, monkeypatch):
+    """
+    Asking for L6 with no pool must be refused, not quietly answered.
+
+    The ladder path prunes L4+ and says so; with one rung, pruning leaves nothing,
+    and an audit with no levels would look like a clean result. Refuse instead.
+    """
+    monkeypatch.setattr("console.runs.browser_available", lambda: True)
+    status, body = console.post_json(
+        "/api/audits", {"single_level": 6, "duration_hours": 0.002}
+    )
+    assert status == 403, body
+    assert "exit IP" in body["error"]
+
+
+def test_single_level_refuses_a_browser_rung_without_a_browser(console, monkeypatch):
+    """Same posture for L1+ on a host with no browser: refuse, do not prune."""
+    monkeypatch.setattr("console.runs.browser_available", lambda: False)
+    status, body = console.post_json(
+        "/api/audits", {"single_level": 2, "duration_hours": 0.002}
+    )
+    assert status == 403, body
+    assert "browser" in body["error"]
+
+
+def test_single_level_runs_a_rotation_rung_once_a_pool_exists(console, monkeypatch):
+    monkeypatch.setattr("console.runs.browser_available", lambda: True)
+    console.post_json("/api/proxy", {"entries": ["http://user:pw@127.0.0.1:8080"]})
+    status, started = console.post_json(
+        "/api/audits", {"single_level": 5, "duration_hours": 0.002}
+    )
+    assert status == 202, started
+    assert started["levels"] == [5]
+    assert started["single_level_mode"] is True
+    console.post_json(f"/api/audits/{started['id']}/cancel")
+
+
+def test_single_level_clamps_an_out_of_range_rung(console, monkeypatch):
+    """
+    A rung past the top of the ladder is clamped, not used to escape it.
+
+    Asserted at the service, because with no pool a clamped L6 is then refused,
+    and that refusal is a different test's subject.
+    """
+    from console.runs import MAX_LEVELS, AuditService
+
+    monkeypatch.setattr("console.runs.browser_available", lambda: True)
+    service = AuditService(allowed_hosts=[], demo_target="http://127.0.0.1:1/")
+    service.proxies.set_list(["http://127.0.0.1:8080"])
+    session = service.start_audit(
+        target_url=service.demo_target,
+        visitor_count=1,
+        duration_hours=0.002,
+        max_level=0,
+        seed=1,
+        single_level=99,
+    )
+    assert session.levels == [MAX_LEVELS]
+    assert session.single_level_mode is True
+    session.cancel()
+
+
 def test_proxy_credentials_are_never_echoed(console):
     """A password must not come back out of the API that took it in."""
     secret = "sup3rs3cr3t-hunter2"

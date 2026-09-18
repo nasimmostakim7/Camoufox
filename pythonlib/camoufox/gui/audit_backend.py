@@ -204,6 +204,8 @@ class AuditBackend(QObject):
         self._hours = 24.0
         self._pattern_index = 0
         self._max_level = 3
+        self._single_level_mode = False
+        self._single_level = 5
         self._max_requests = 5000
         self._max_rps = 5.0
         self._max_concurrency = 4
@@ -378,6 +380,30 @@ class AuditBackend(QObject):
     @Slot(int)
     def setMaxLevel(self, value: int) -> None:
         self._max_level = max(0, min(int(value), 6))
+        self.changed.emit()
+
+    @Property(bool, notify=changed)
+    def singleLevelMode(self):
+        return self._single_level_mode
+
+    @Slot(bool)
+    def setSingleLevelMode(self, value: bool) -> None:
+        """Run one rung on its own instead of the ladder from L0.
+
+        The visitor count is pinned by the engine in this mode, so a repeat run
+        at the same rung is directly comparable.
+        """
+        self._single_level_mode = bool(value)
+        self.changed.emit()
+        self._refresh_preview()
+
+    @Property(int, notify=changed)
+    def singleLevel(self):
+        return self._single_level
+
+    @Slot(int)
+    def setSingleLevel(self, value: int) -> None:
+        self._single_level = max(0, min(int(value), 6))
         self.changed.emit()
 
     @Property(int, notify=changed)
@@ -603,6 +629,8 @@ class AuditBackend(QObject):
                 duration_hours=self._hours,
                 pattern=ArrivalPattern.ALL[self._pattern_index],
                 limits=SafetyLimits(max_arrivals_per_minute=self._max_per_minute),
+                single_level_mode=self._single_level_mode,
+                single_level=self._single_level,
             )
             schedule = build_schedule(cfg.schedule_config())
         except Exception as exc:
@@ -620,7 +648,7 @@ class AuditBackend(QObject):
 
         self._preview = counts
         gaps = schedule.inter_arrival_seconds()
-        per_hour = self._visitors / self._hours if self._hours else 0
+        per_hour = cfg.visitor_count / self._hours if self._hours else 0
         self._preview_summary = (
             f"{schedule.count} arrivals over {self._hours:g}h (~{per_hour:.1f}/hour). "
             f"Busiest bucket {max(counts) if counts else 0}, quietest "
@@ -629,6 +657,10 @@ class AuditBackend(QObject):
             if gaps
             else f"{schedule.count} arrivals."
         )
+        if self._single_level_mode:
+            self._preview_summary += (
+                f" Single-rung mode pins the count to {cfg.visitor_count}."
+            )
         self.schedulePreviewChanged.emit()
 
     # -- run ---------------------------------------------------------------
@@ -695,6 +727,8 @@ class AuditBackend(QObject):
             target_url=self._target,
             scope=scope,
             max_evasion_level=self._max_level,
+            single_level_mode=self._single_level_mode,
+            single_level=self._single_level,
             visitor_count=self._visitors,
             duration_hours=self._hours,
             pattern=ArrivalPattern.ALL[self._pattern_index],
@@ -716,10 +750,17 @@ class AuditBackend(QObject):
             self.changed.emit()
             return
 
-        self._append_log(
-            f"Starting audit of {self._target} - {self._visitors} visitors over "
-            f"{self._hours:g}h, levels 0-{self._max_level}"
-        )
+        if self._single_level_mode:
+            self._append_log(
+                f"Starting audit of {self._target} - single rung "
+                f"{config.selected_levels()[0].name}, {config.visitor_count} "
+                f"visitors over {self._hours:g}h"
+            )
+        else:
+            self._append_log(
+                f"Starting audit of {self._target} - {self._visitors} visitors over "
+                f"{self._hours:g}h, levels 0-{self._max_level}"
+            )
         self._append_log(
             f"Ceilings: {self._max_requests} requests, {self._max_rps}/s, "
             f"{self._max_concurrency} concurrent, {self._max_per_minute}/min"

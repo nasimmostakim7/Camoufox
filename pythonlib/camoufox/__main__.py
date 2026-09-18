@@ -872,6 +872,16 @@ def audit_levels() -> None:
 )
 @click.option("--max-level", type=int, default=3, show_default=True, help="Highest rung of the ladder to climb (0-6).")
 @click.option("--level", "levels", multiple=True, type=int, help="Run exactly these rungs (repeatable).")
+@click.option(
+    "--single-level",
+    "single_level",
+    type=int,
+    default=None,
+    metavar="N",
+    help="Run only rung N (0-6) instead of the ladder from L0. The visitor count is "
+    "pinned to 100 so repeat runs at one posture are comparable. Cannot be "
+    "combined with --level.",
+)
 @click.option("--proxy-file", type=click.Path(exists=True, dir_okay=False), default=None, help="Proxy list, one per line.")
 @click.option("--proxy-gateway", default=None, help="Rotating proxy gateway URL, may contain {session}.")
 @click.option("--proxy-policy", default="round_robin", show_default=True, help="Pool selection policy for file mode.")
@@ -897,7 +907,7 @@ def audit_levels() -> None:
 @click.option("--quiet", is_flag=True, help="Only print the final report.")
 def audit_run(
     target, scope_hosts, allow_subdomains, authorized, visitors, hours, pattern,
-    max_level, levels, proxy_file, proxy_gateway, proxy_policy,
+    max_level, levels, single_level, proxy_file, proxy_gateway, proxy_policy,
     max_requests, max_rps, max_concurrency, max_per_minute, max_per_proxy,
     force_headless, force_headful, seed, out, quiet,
 ) -> None:
@@ -911,6 +921,8 @@ def audit_run(
           --visitors 1000 --hours 24
       camoufox audit run --target https://example.com/ --i-am-authorized \\
           --max-level 5 --proxy-file proxies.txt --out ./audit
+      camoufox audit run --target https://example.com/ --i-am-authorized \\
+          --single-level 5 --visitors 100 --proxy-file proxies.txt
     """
     import asyncio
 
@@ -937,11 +949,21 @@ def audit_run(
     elif proxy_file:
         proxy = {"mode": "file", "file": proxy_file, "policy": proxy_policy}
 
+    if single_level is not None and levels:
+        rprint(
+            "Refusing to run: --level and --single-level name the same decision. "
+            "Pass --single-level alone to run one rung, or --level to run a set.",
+            fg="red",
+        )
+        raise SystemExit(2)
+
     config = AuditConfig(
         target_url=target,
         scope=scope,
         max_evasion_level=max_level,
         levels=list(levels) or None,
+        single_level_mode=single_level is not None,
+        single_level=single_level if single_level is not None else 0,
         visitor_count=visitors,
         duration_hours=hours,
         pattern=pattern,
@@ -965,7 +987,21 @@ def audit_run(
 
     rprint(f"Auditing {target}", fg="cyan")
     rprint(f"  scope: {scope.describe()}", fg="dim")
-    rprint(f"  {visitors} visitors over {hours:g}h, pattern {pattern}", fg="dim")
+    rprint(f"  {config.visitor_count} visitors over {hours:g}h, pattern {pattern}", fg="dim")
+    if config.single_level_mode:
+        rprint(
+            f"  mode: single rung, {config.selected_levels()[0].name} only",
+            fg="dim",
+        )
+        if visitors != config.visitor_count:
+            rprint(
+                f"  note: single-rung mode pins the visitor count to "
+                f"{config.visitor_count}; --visitors {visitors} is ignored so "
+                f"repeat runs stay comparable.",
+                fg="yellow",
+            )
+    else:
+        rprint(f"  mode: ladder, L0-{max_level}", fg="dim")
     rprint(
         f"  ceilings: {max_requests} requests, {max_rps}/s, "
         f"{max_concurrency} concurrent, {max_per_minute}/min",
